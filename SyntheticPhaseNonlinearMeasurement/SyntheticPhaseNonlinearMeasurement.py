@@ -131,7 +131,7 @@ def estimate_frequency_fft(data, pad_factor=4, detrend=True, window=True):
         Estimated frequency (cycles / unit time)
 
     spectrum : (freqs, power)
-        For debugging/plotting
+        Frequencies and spectral power for diagnostics or plotting.
     """
 
     tk, yk = data
@@ -141,7 +141,7 @@ def estimate_frequency_fft(data, pad_factor=4, detrend=True, window=True):
     N = len(tk)
     dt = tk[1] - tk[0]
 
-    # --- Convert to scalar signal ---
+    # Reduce multidimensional measurements to a scalar signal.
     if yk.ndim == 2:
         # Robust choice: use principal component (generalizable)
         y_mean = yk.mean(axis=0)
@@ -150,16 +150,16 @@ def estimate_frequency_fft(data, pad_factor=4, detrend=True, window=True):
     else:
         y = yk.copy()
 
-    # --- Detrend ---
+    # Remove the mean.
     if detrend:
         y = y - np.mean(y)
 
-    # --- Windowing ---
+    # Apply a Hann window.
     if window:
         w = np.hanning(N)
         y = y * w
 
-    # --- Zero padding ---
+    # Zero-pad before the FFT.
     Nfft = int(pad_factor * N)
 
     Y = np.fft.rfft(y, n=Nfft)
@@ -382,24 +382,18 @@ def kalman_filter(param, data, state_priors, *, validate=False):
         - Python arrays are 0..N-1, but element i corresponds to SI index k=i+1.
         - tk[i] should equal (i+1)*dt (uniform spacing assumed).
 
-    Inputs
-    ------
-    param : (omega, Dtheta, R)
-        omega  : drift rate (angular frequency)
-        Dtheta : phase diffusivity (>=0)
-        R      : per-component measurement-noise variance (>=0), covariance = R I_2
-
-    data : (tk, yk)
-        tk : times, shape (N,), uniformly spaced
-        yk : measurements, shape (N,2)
-
-    state_priors : (mu_theta, sigma_theta, ...)
-        mu_theta    : prior mean for θ_1
-        sigma_theta : prior std for θ_1
-        Remaining entries are ignored by this function.
-
-    validate : bool (default False)
-        If True, do basic sanity checks (helpful while debugging).
+    Parameters
+    ----------
+    param : tuple[float, float, float]
+        ``(omega, Dtheta, R)``: drift rate, phase diffusivity, and
+        per-component measurement-noise variance.
+    data : tuple[ndarray, ndarray]
+        ``(tk, yk)`` containing uniformly spaced times and two-dimensional
+        measurements.
+    state_priors : tuple[float, float]
+        ``(mu_theta, sigma_theta)`` defining the prior for θ_1.
+    validate : bool, optional
+        Perform basic input and parameter checks.
 
     Returns
     -------
@@ -460,7 +454,7 @@ def kalman_filter(param, data, state_priors, *, validate=False):
         if sigma_theta < 0:
             raise ValueError(f"sigma_theta must be >= 0; got {sigma_theta!r}")
 
-    # Helper scalars
+    # Per-step process variance and deterministic drift
     Q  = 2.0 * Dtheta * dt          # process noise variance per step (k-1 -> k)
     wt = omega * dt                 # deterministic drift per step
 
@@ -482,7 +476,7 @@ def kalman_filter(param, data, state_priors, *, validate=False):
     def dh(theta):
         return np.array([-np.sin(theta), np.cos(theta)], dtype=float)
 
-    # ----- k = 1 (python index 0): prediction is prior -----
+    # At k = 1, the predicted state is the prior on θ_1.
     thetakk_1[0] = float(mu_theta)
     Pkk_1[0]     = float(sigma_theta)**2
 
@@ -508,7 +502,7 @@ def kalman_filter(param, data, state_priors, *, validate=False):
     P_post = (1.0 - KH) * Ppred * (1.0 - KH) + (R * float(K @ K))
     Pkk[0] = P_post
 
-    # ----- k = 2..N -----
+    # Propagate and update for k = 2..N.
     for k in range(1, N):
         # Predict
         thetakk_1[k] = thetakk[k - 1] + wt
@@ -636,13 +630,13 @@ def neg_log_marginal_likelihood(param, data, state_priors, *, param_mode="log", 
     def dh(theta):
         return np.array([-np.sin(theta), np.cos(theta)], dtype=float)  # length-2 (2×1 Jacobian)
 
-    # ---- k = 1: predicted state is the prior on θ_1 ----
+    # At k = 1, the predicted state is the prior on θ_1.
     theta_pred = float(mu_theta)
     P_pred = float(sigma_theta)**2
 
     nll = 0.0
 
-    # ---- EKF innovation likelihood contributions ----
+    # EKF innovation-likelihood contributions
     for k in range(N):
         # Predicted measurement and Jacobian at θ̂_{k|k-1}
         y_pred = h(theta_pred)            # (2,)
@@ -745,17 +739,17 @@ def neg_log_prior(param, param_priors, *, param_mode="log", validate=False):
 
     nlp = 0.0
 
-    # ---- Normal prior on omega (omit constants) ----
+    # Normal prior on omega, omitting constants
     nlp += 0.5 * ((omega - mu_omega) / sigma_omega) ** 2
 
-    # ---- Inverse-Gamma priors (omit constants) ----
+    # Inverse-gamma priors, omitting constants
     # IG(α, β): p(x) ∝ x^(-α-1) exp(-β/x)
     # => -log p(x) = (α+1) log x + β/x  (up to additive constant)
 
     nlp += (alpha_D + 1.0) * np.log(Dtheta) + beta_D / Dtheta
     nlp += (alpha_R + 1.0) * np.log(R) + beta_R / R
 
-    # ---- Jacobian correction for log-parameterization ----
+    # Jacobian correction for the log parameterization
     if param_mode == "log":
         # -log p(ln x) = -log p(x) - ln x
         nlp -= lnDtheta
@@ -838,27 +832,28 @@ def rts_smoother(param, data, kalman_phases, *, validate=False):
       - Arrays are length N; Python index i corresponds to SI index k=i+1.
       - Prior is on θ_1; process noise Q applies only to transitions k>=2.
 
-    Inputs
-    ------
-    param : (omega, Dtheta, R)
-    data : (tk, yk)
-    kalman_phases :
-        Either (thetakk, Pkk, thetakk_1, Pkk_1)
-        or     (thetakk, Pkk, thetakk_1, Pkk_1, ...)  # extra entries ignored
-
-        outputs of kalman_filter:
-          thetakk   : θ̂_{k|k}
-          Pkk       : P_{k|k}
-          thetakk_1 : θ̂_{k|k-1}
-          Pkk_1     : P_{k|k-1}
+    Parameters
+    ----------
+    param : tuple[float, float, float]
+        ``(omega, Dtheta, R)`` in natural coordinates.
+    data : tuple[ndarray, ndarray]
+        ``(tk, yk)`` containing times and measurements.
+    kalman_phases : tuple
+        Filtered means, filtered variances, predicted means, and predicted
+        variances returned by :func:`kalman_filter`. Additional EKF outputs
+        are accepted and ignored.
+    validate : bool, optional
+        Check that the filter outputs and time grid are consistent.
 
     Returns
     -------
-    thetakN : θ̂_{k|N}     smoothed mean, shape (N,)
-    PkN     : P_{k|N}      smoothed variance, shape (N,)
-    Sigmakk_1 : Σ_{k,k-1|N} lag-one smoothed covariance (lower diagonal), shape (N,)
-        Convention: Sigmakk_1[i] corresponds to Σ_{k=i+1, k-1=i|N}.
-        Entry Sigmakk_1[0] (k=1) is meaningless and set to 0.
+    thetakN : ndarray, shape (N,)
+        Smoothed means θ̂_{k|N}.
+    PkN : ndarray, shape (N,)
+        Smoothed variances P_{k|N}.
+    Sigmakk_1 : ndarray, shape (N,)
+        Lag-one smoothed covariances. Element ``i`` corresponds to
+        Σ_{i+1,i|N}; element zero is unused and set to zero.
     """
     omega, Dtheta, R = param
     tk, yk = data
@@ -1208,16 +1203,30 @@ def neg_log_posterior_frozen(
 
 def freeze_linearization(param, data, state_priors, *, param_mode="log", validate=False):
     """
-    Run the EKF once at a reference parameter estimate and return the frozen
-    linearization (Hk, ck) for downstream use.
+    Run the EKF once and freeze its measurement linearization.
 
+    Parameters
+    ----------
+    param : tuple[float, float, float]
+        Reference parameters in the coordinates selected by ``param_mode``.
+    data : tuple[ndarray, ndarray]
+        ``(tk, yk)`` containing uniformly spaced times and two-dimensional
+        measurements.
+    state_priors : tuple[float, float]
+        ``(mu_theta, sigma_theta)`` defining the prior for θ_1.
+    param_mode : {"log", "natural"}, optional
+        Coordinates used for ``param``.
+    validate : bool, optional
+        Pass input checks through to :func:`kalman_filter`.
 
     Returns
     -------
     Hk : ndarray, shape (N, 2)
+        Frozen measurement Jacobians.
     ck : ndarray, shape (N, 2)
+        Frozen affine offsets.
     kalman_phases : tuple
-        Full output of kalman_filter(...)
+        Full output from :func:`kalman_filter`.
     """
     if param_mode == "log":
         omega, lnDtheta, lnR = param
@@ -1245,7 +1254,7 @@ def grad_neg_log_posterior_frozen(
     return_aux: bool = False,
 ):
     """
-    Gradient of the *negative* log posterior for the FROZEN linearized model
+    Gradient of the negative log posterior for the frozen linearized model
     associated with Example 1b.
 
     This function is intended to match finite differences of
@@ -1310,11 +1319,25 @@ def grad_neg_log_posterior_frozen(
 
     Parameters
     ----------
+    param : tuple[float, float, float]
+        Model parameters in the coordinates selected by ``param_mode``.
+    data : tuple[ndarray, ndarray]
+        ``(tk, yk)`` containing uniformly spaced times and two-dimensional
+        measurements.
+    priors : tuple
+        ``(mu_theta, sigma_theta, mu_omega, sigma_omega, alpha_D, beta_D,
+        alpha_R, beta_R)``.
     Hk : ndarray, shape (N, 2)
         Frozen Jacobians from the EKF pass at a reference parameter estimate.
 
     ck : ndarray, shape (N, 2)
         Frozen affine offsets from the EKF pass at a reference parameter estimate.
+    param_mode : {"log", "natural"}, optional
+        Coordinates used for ``param`` and the returned gradient.
+    validate : bool, optional
+        Perform basic input and parameter checks.
+    return_aux : bool, optional
+        Return intermediate smoothing quantities when true.
 
     Returns
     -------
@@ -1382,9 +1405,7 @@ def grad_neg_log_posterior_frozen(
         if not np.allclose(np.sum(Hk**2, axis=1), 1.0, atol=1e-8, rtol=1e-8):
             raise ValueError("Each frozen Hk row should have unit norm for this model.")
 
-    # ------------------------------------------------------------------
-    # 1) Construct scalar pseudo-observations for the frozen linear model
-    # ------------------------------------------------------------------
+    # Construct scalar pseudo-observations for the frozen linear model.
     # z_k = H_k^T (y_k - c_k) = theta_k + scalar Gaussian noise with variance R
     a = yk - ck
     zk = np.sum(Hk * a, axis=1)
@@ -1393,9 +1414,7 @@ def grad_neg_log_posterior_frozen(
     # ||a_k - H_k theta||^2 = (z_k - theta)^2 + ||a_k||^2 - z_k^2
     orth_sq = np.sum(a**2, axis=1) - zk**2
 
-    # ------------------------------------------------------------------
-    # 2) Scalar Kalman filter for z_k = theta_k + noise
-    # ------------------------------------------------------------------
+    # Scalar Kalman filter for z_k = theta_k + noise
     Q = 2.0 * Dtheta * dt
     wt = omega * dt
 
@@ -1422,9 +1441,7 @@ def grad_neg_log_posterior_frozen(
         thetakk[k] = thetakk_1[k] + Kk * (zk[k] - thetakk_1[k])
         Pkk[k] = (1.0 - Kk) * Pkk_1[k]
 
-    # ------------------------------------------------------------------
-    # 3) RTS smoother for the scalar frozen model
-    # ------------------------------------------------------------------
+    # RTS smoother for the scalar frozen model
     thetakN = np.empty(N, dtype=float)
     PkN = np.empty(N, dtype=float)
 
@@ -1436,18 +1453,14 @@ def grad_neg_log_posterior_frozen(
         thetakN[k] = thetakk[k] + A * (thetakN[k + 1] - thetakk_1[k + 1])
         PkN[k] = Pkk[k] + A**2 * (PkN[k + 1] - Pkk_1[k + 1])
 
-    # ------------------------------------------------------------------
-    # 4) Lag-one covariance from full posterior covariance matrix
-    #    (valid here because the frozen model reduces to Example 1a)
-    # ------------------------------------------------------------------
+    # Lag-one covariance from the full posterior covariance matrix; valid
+    # because the frozen model reduces to Example 1a.
     Sigma = theta_covariance((omega, Dtheta, R), N, dt, state_priors, validate=validate)
     Sigmakk_1 = np.zeros(N, dtype=float)
     if N > 1:
         Sigmakk_1[1:] = np.diag(Sigma, k=-1)
 
-    # ------------------------------------------------------------------
-    # 5) Expected sufficient statistics under p(theta | y, lambda; Hk, ck)
-    # ------------------------------------------------------------------
+    # Expected sufficient statistics under p(theta | y, lambda; Hk, ck)
     dtheta_mean = thetakN[1:] - thetakN[:-1]
     ES0 = np.sum(dtheta_mean**2 + PkN[1:] + PkN[:-1] - 2.0 * Sigmakk_1[1:])
 
@@ -1461,9 +1474,7 @@ def grad_neg_log_posterior_frozen(
     wdt = omega * dt
     M = N - 1
 
-    # ------------------------------------------------------------------
-    # 6) Score of the transformed log posterior in log-coordinates
-    # ------------------------------------------------------------------
+    # Score of the transformed log posterior in log coordinates
     score_log = np.zeros(3, dtype=float)
 
     score_log[0] = (
@@ -1485,9 +1496,7 @@ def grad_neg_log_posterior_frozen(
 
     grad_log = -score_log
 
-    # ------------------------------------------------------------------
-    # 7) Convert to requested coordinates
-    # ------------------------------------------------------------------
+    # Convert to the requested coordinates.
     if param_mode == "log":
         grad = grad_log
     else:
@@ -1596,9 +1605,7 @@ def em_update(
     if yk.ndim != 2 or yk.shape[1] != 2:
         raise ValueError(f"yk must have shape (N, 2); got {yk.shape}")
 
-    # --------------------------------------------------
-    # Unpack priors
-    # --------------------------------------------------
+    # Unpack priors.
     (
         mu_theta, sigma_theta,
         mu_omega, sigma_omega,
@@ -1608,9 +1615,7 @@ def em_update(
 
     state_priors = (mu_theta, sigma_theta)
 
-    # --------------------------------------------------
-    # Convert parameters to natural scale if needed
-    # --------------------------------------------------
+    # Convert parameters to natural coordinates.
     if param_mode == "natural":
         omega, Dtheta, R = old_param
     elif param_mode == "log":
@@ -1642,9 +1647,7 @@ def em_update(
         if Dtheta <= 0 or R <= 0:
             raise ValueError("Require Dtheta > 0 and R > 0.")
 
-    # --------------------------------------------------
-    # E-step part 1: freeze nonlinear measurement model
-    # --------------------------------------------------
+    # E-step: freeze the nonlinear measurement model.
     kalman_phases = kalman_filter((omega, Dtheta, R), (tk, yk), state_priors, validate=validate)
     _, _, _, _, _, Hk, ck = kalman_phases
 
@@ -1661,9 +1664,7 @@ def em_update(
     # ||a_k - H_k theta||^2 = (z_k - theta)^2 + (||a_k||^2 - z_k^2)
     orth_sq = np.sum(a**2, axis=1) - zk**2
 
-    # --------------------------------------------------
-    # E-step part 2: scalar Kalman filter + RTS smoother on z_k
-    # --------------------------------------------------
+    # Filter and smooth the scalar pseudo-observations.
     Q = 2.0 * Dtheta * dt
     wt = omega * dt
 
@@ -1708,9 +1709,7 @@ def em_update(
     Sigmakk_1 = np.zeros(N, dtype=float)
     Sigmakk_1[1:] = np.diag(Sigma, k=-1)
 
-    # --------------------------------------------------
-    # Compute sufficient statistics
-    # --------------------------------------------------
+    # Expected sufficient statistics
     M = N - 1
 
     ES0 = np.sum(
@@ -1723,18 +1722,15 @@ def em_update(
     # 2D frozen-model measurement residual energy
     ESy = float(np.sum((zk - thetakN)**2 + PkN + orth_sq))
 
-    # --------------------------------------------------
     # M-step updates (MAP under conjugate priors)
-    # --------------------------------------------------
-
-    # ---- Update omega (Gaussian prior) ----
+    # Update omega under its Gaussian prior.
     omega_new = (
         ES1 / (2.0 * Dtheta) + mu_omega / sigma_omega**2
     ) / (
         M * dt / (2.0 * Dtheta) + 1.0 / sigma_omega**2
     )
 
-    # ---- Update Dtheta (Inverse-Gamma prior) ----
+    # Update Dtheta under its inverse-gamma prior.
     wdt = omega_new * dt
     B = ES0 - 2.0 * ES1 * wdt + M * (wdt**2)
 
@@ -1908,11 +1904,17 @@ def prior_information(lambda_map, priors, param_type="natural"):
         If param_type == "natural": (omega, Dtheta, R)
         If param_type == "log":     (omega, logDtheta, logR)
 
-    param_priors : tuple
-        (mu_omega, sigma_omega, alpha_D, beta_D, alpha_R, beta_R)
+    priors : tuple
+        ``(mu_theta, sigma_theta, mu_omega, sigma_omega, alpha_D, beta_D,
+        alpha_R, beta_R)``.
 
-    param_type : str
-        "natural" or "log"
+    param_type : {"natural", "log"}, optional
+        Coordinates used for ``lambda_map`` and the returned matrix.
+
+    Returns
+    -------
+    I_prior : ndarray, shape (3, 3)
+        Negative Hessian of the log parameter prior.
 
     Notes
     -----
@@ -2031,9 +2033,7 @@ def smoothing_statistics_frozen(param_eval, data, priors, Hk, ck, param_type="lo
         alpha_R, beta_R
     ) = priors
 
-    # ------------------------------------------------------------
-    # Map input -> natural parameters
-    # ------------------------------------------------------------
+    # Convert input to natural coordinates.
     if param_type == "natural":
         omega, Dtheta, R = param_eval
         lnDtheta = float(np.log(Dtheta))
@@ -2063,18 +2063,14 @@ def smoothing_statistics_frozen(param_eval, data, priors, Hk, ck, param_type="lo
         if not np.allclose(hn, 1.0, atol=1e-8, rtol=1e-8):
             raise ValueError("Each Hk row should have unit norm for this model.")
 
-    # ------------------------------------------------------------
-    # Scalar pseudo-observations for frozen model
-    # ------------------------------------------------------------
+    # Scalar pseudo-observations for the frozen model
     a = yk - ck
     zk = np.sum(Hk * a, axis=1)
 
     # ||a_k - H_k theta||^2 = (z_k - theta)^2 + orth_sq_k
     orth_sq = np.sum(a**2, axis=1) - zk**2
 
-    # ------------------------------------------------------------
-    # Scalar KF for z_k = theta_k + noise
-    # ------------------------------------------------------------
+    # Scalar Kalman filter for z_k = theta_k + noise
     Q = 2.0 * Dtheta * dt
     wt = omega * dt
 
@@ -2100,9 +2096,7 @@ def smoothing_statistics_frozen(param_eval, data, priors, Hk, ck, param_type="lo
         thetakk[k] = thetakk_1[k] + K * (zk[k] - thetakk_1[k])
         Pkk[k] = (1.0 - K) * Pkk_1[k]
 
-    # ------------------------------------------------------------
     # RTS smoother
-    # ------------------------------------------------------------
     thetakN = np.empty(N, dtype=float)
     PkN = np.empty(N, dtype=float)
 
@@ -2114,18 +2108,14 @@ def smoothing_statistics_frozen(param_eval, data, priors, Hk, ck, param_type="lo
         thetakN[k] = thetakk[k] + A * (thetakN[k + 1] - thetakk_1[k + 1])
         PkN[k] = Pkk[k] + A**2 * (PkN[k + 1] - Pkk_1[k + 1])
 
-    # ------------------------------------------------------------
-    # Lag-one covariance via full covariance matrix
-    # ------------------------------------------------------------
+    # Lag-one covariance from the full covariance matrix
     state_priors = (mu_theta, sigma_theta)
     Sigma = theta_covariance(lambda_nat, N, dt, state_priors, validate=validate)
     Sigmakk_1 = np.zeros(N, dtype=float)
     if N > 1:
         Sigmakk_1[1:] = np.diag(Sigma, k=-1)
 
-    # ------------------------------------------------------------
     # Expected sufficient statistics
-    # ------------------------------------------------------------
     ES0 = float(np.sum(
         (thetakN[1:] - thetakN[:-1])**2
         + PkN[1:] + PkN[:-1]
@@ -2162,11 +2152,19 @@ def smoothing_statistics_frozen(param_eval, data, priors, Hk, ck, param_type="lo
 
 def complete_data_information_frozen(statistics, param_type="log"):
     """
-    Complete-data information matrix for the frozen linearized model:
+    Compute complete-data information for the frozen linearized model.
 
-        I_comp = -E[ ∇^2 ell_c | y, lambda ]
+    Parameters
+    ----------
+    statistics : dict
+        Reusable output from :func:`smoothing_statistics_frozen`.
+    param_type : {"log", "natural"}, optional
+        Coordinates used for the returned information matrix.
 
-    computed from frozen-model smoothing statistics.
+    Returns
+    -------
+    I_comp : ndarray, shape (3, 3)
+        ``-E[∇² ell_c | y, lambda]`` in the requested coordinates.
     """
     omega, Dtheta, R = statistics["lambda_natural"]
     N = statistics["N"]
@@ -2203,11 +2201,23 @@ def complete_data_information_frozen(statistics, param_type="log"):
 
 def missing_information_frozen(statistics, priors=None, param_type="log") -> np.ndarray:
     """
-    Exact missing information matrix for the frozen linearized model,
+    Compute exact missing information for the frozen linearized model.
 
-        I_miss = Cov(score_c | y, lambda),
+    Parameters
+    ----------
+    statistics : dict
+        Reusable output from :func:`smoothing_statistics_frozen`.
+    priors : tuple, optional
+        Retained for interface consistency with the other information
+        functions; it is not used in the calculation.
+    param_type : {"log", "natural"}, optional
+        Coordinates used for the returned information matrix.
 
-    computed using banded solves and streaming trace identities.
+    Returns
+    -------
+    I_miss : ndarray, shape (3, 3)
+        ``Cov(score_c | y, lambda)`` computed with banded solves and
+        streaming trace identities.
     """
     z = np.asarray(statistics["zk"], dtype=float).ravel()
     m = np.asarray(statistics["m"], dtype=float).ravel()
@@ -2370,13 +2380,31 @@ def missing_information_frozen(statistics, priors=None, param_type="log") -> np.
 
 def posterior_information_frozen(param_eval, data, priors, Hk, ck, param_type="log"):
     """
-    Compute Laplace posterior information for the frozen linearized model:
+    Compute Laplace posterior information for the frozen linearized model.
 
-        I_obs = I_prior + I_comp - I_miss
+    Parameters
+    ----------
+    param_eval : tuple[float, float, float]
+        Parameters at which to evaluate the frozen surrogate, in the
+        coordinates selected by ``param_type``.
+    data : tuple[ndarray, ndarray]
+        ``(tk, yk)`` containing times and two-dimensional measurements.
+    priors : tuple
+        State and parameter prior hyperparameters in module-wide order.
+    Hk : ndarray, shape (N, 2)
+        Frozen measurement Jacobians.
+    ck : ndarray, shape (N, 2)
+        Frozen affine offsets.
+    param_type : {"log", "natural"}, optional
+        Coordinates used for ``param_eval`` and all returned matrices.
 
-    where Hk and ck are fixed externally, typically from `freeze_linearization`
-    at the nonlinear MAP, and the information is evaluated at `param_eval`
-    (typically the MAP of the frozen surrogate model).
+    Returns
+    -------
+    out : dict
+        Prior, complete-data, missing, and observed information matrices;
+        Laplace covariance; EM convergence diagnostics; and smoothing
+        statistics. The observed information satisfies
+        ``I_obs = I_prior + I_comp - I_miss``.
     """
     stats = smoothing_statistics_frozen(
         param_eval, data, priors, Hk, ck, param_type=param_type
@@ -2411,10 +2439,36 @@ def posterior_information_frozen(param_eval, data, priors, Hk, ck, param_type="l
     }
     
 def _to_log_params(param_natural):
+    """
+    Convert model parameters from natural to log coordinates.
+
+    Parameters
+    ----------
+    param_natural : array_like, shape (3,)
+        ``(omega, Dtheta, R)``.
+
+    Returns
+    -------
+    param_log : ndarray, shape (3,)
+        ``(omega, lnDtheta, lnR)``.
+    """
     omega, D, R = param_natural
     return np.array([omega, np.log(D), np.log(R)], dtype=float)
 
 def _to_natural_params(param_log):
+    """
+    Convert model parameters from log to natural coordinates.
+
+    Parameters
+    ----------
+    param_log : array_like, shape (3,)
+        ``(omega, lnDtheta, lnR)``.
+
+    Returns
+    -------
+    param_natural : ndarray, shape (3,)
+        ``(omega, Dtheta, R)``.
+    """
     omega, lnD, lnR = param_log
     return np.array([omega, np.exp(lnD), np.exp(lnR)], dtype=float)
 
@@ -2443,11 +2497,8 @@ def simulate_and_infer(
     for the nonlinear EKF posterior, then freeze the linearization and compute
     Laplace uncertainty using the MAP of the frozen surrogate posterior.
 
-    IMPORTANT
-    ---------
-    `param_true_natural` is ALWAYS interpreted as natural parameters
-        (omega, Dtheta, R),
-    regardless of `param_type`.
+    ``param_true_natural`` is always interpreted as ``(omega, Dtheta, R)`` in
+    natural coordinates, regardless of ``param_type``.
 
     Workflow
     --------
@@ -2480,32 +2531,29 @@ def simulate_and_infer(
              mu_omega, sigma_omega,
              alpha_D, beta_D,
              alpha_R, beta_R)
-    param_type : {"log", "natural"}, default="log"
+    param_type : {"log", "natural"}, optional
         Coordinate system used in the optimization/information calculations.
-    nonlinear_inference : {"optimize", "em"}, default="optimize"
-        Method used for section (1), i.e. inference of the nonlinear-model
-        parameter estimate before freezing the linearization.
-    nonlinear_method : str, default="Powell"
+    nonlinear_inference : {"optimize", "em"}, optional
+        Method used to infer the nonlinear-model parameter estimate before
+        freezing the linearization.
+    nonlinear_method : str, optional
         Optimizer for the nonlinear EKF posterior when
-        nonlinear_inference="optimize".
-    frozen_method : str, default="L-BFGS-B"
+        ``nonlinear_inference="optimize"``.
+    frozen_method : str, optional
         Optimizer for the frozen surrogate posterior.
-    max_iter : int, default=500
+    max_iter : int, optional
         Maximum optimizer / EM iterations.
-    tol : float, default=1e-6
+    tol : float, optional
         Convergence tolerance.
-    return_stats : bool, default=False
-        If True, include `post["stats"]` in the returned dictionary.
-    initial_phase_method : {"data_informed", "prior"}, default="data_informed"
-        How to set the initial-state prior.
-        - "prior": use the supplied (mu_theta, sigma_theta)
-        - "data_informed": estimate (mu_theta, sigma_theta) from the data
-    initial_phase_window_size : int, default=6
-        Window size passed to `estimate_initial_phase_regression(...)`.
-    initial_phase_sigma_inflation : float, default=2.0
-        Inflation factor applied to the estimated phase std:
-            sigma_theta = inflation * phi_std
-    initial_phase_R_strategy : {"prior_mode", "prior_mean"}, default="prior_mode"
+    return_stats : bool, optional
+        Include frozen-model smoothing statistics in the returned dictionary.
+    initial_phase_method : {"data_informed", "prior"}, optional
+        Use the supplied initial-state prior or estimate one from the data.
+    initial_phase_window_size : int, optional
+        Window size passed to :func:`estimate_initial_phase_regression`.
+    initial_phase_sigma_inflation : float, optional
+        Inflation factor applied to the estimated phase standard deviation.
+    initial_phase_R_strategy : {"prior_mode", "prior_mean"}, optional
         How to estimate R for the initial phase regression.
 
     Returns
@@ -2515,10 +2563,11 @@ def simulate_and_infer(
         diagnostics, MAP estimates, frozen linearization, posterior
         information, covariance summaries, and optional statistics.
 
-    Added benchmark-friendly outputs
-    --------------------------------
-      - stderr (sqrt diag covariance) in chosen parameterization
-      - zscore_true = (lambda_map_frozen - lambda_true_in_same_coords)/stderr
+    Notes
+    -----
+    ``stderr`` is the square root of the Laplace covariance diagonal, and
+    ``zscore_true`` compares the frozen MAP with the truth in matching
+    coordinates.
     """
     if param_type not in ("log", "natural"):
         raise ValueError("param_type must be 'log' or 'natural'")
@@ -2538,9 +2587,7 @@ def simulate_and_infer(
     if initial_phase_sigma_inflation <= 0:
         raise ValueError("initial_phase_sigma_inflation must be > 0")
 
-    # ------------------------------------------------------------------
-    # Unpack priors
-    # ------------------------------------------------------------------
+    # Unpack priors.
     (
         mu_theta_prior,
         sigma_theta_prior,
@@ -2560,9 +2607,7 @@ def simulate_and_infer(
     state_priors_nominal = (mu_theta_prior, sigma_theta_prior)
     param_priors = (mu_omega, sigma_omega, alpha_D, beta_D, alpha_R, beta_R)
 
-    # ------------------------------------------------------------------
-    # Truth (always natural)
-    # ------------------------------------------------------------------
+    # True parameters are always supplied in natural coordinates.
     param_true_natural = np.asarray(param_true_natural, dtype=float)
     if param_true_natural.shape != (3,):
         raise ValueError("param_true_natural must have shape (3,)")
@@ -2573,17 +2618,13 @@ def simulate_and_infer(
 
     param_true_log = _to_log_params(param_true_natural)
 
-    # ------------------------------------------------------------------
-    # Simulate from nonlinear 2D model
-    # ------------------------------------------------------------------
+    # Simulate from the nonlinear two-dimensional model.
     tk, thetak_true, yk = simulate_data(
         tuple(param_true_natural), N, dt, rng, state_priors_nominal
     )
     data = (tk, yk)
 
-    # ------------------------------------------------------------------
-    # Initial guess for parameter inference from parameter priors
-    # ------------------------------------------------------------------
+    # Draw the initial parameter estimate from the priors.
     omega0 = rng.normal(mu_omega, sigma_omega)
 
     # Inverse-gamma prior sampling using 1/X ~ Gamma(alpha, scale=1/beta)
@@ -2597,9 +2638,7 @@ def simulate_and_infer(
         x0 = np.array([omega0, D0, R0], dtype=float)
         bounds = [(None, None), (1e-15, None), (1e-15, None)]
 
-    # ------------------------------------------------------------------
-    # Data-informed prior for the initial phase
-    # ------------------------------------------------------------------
+    # Optionally construct a data-informed initial-phase prior.
     phase_init = None
     omega_init = None
     R_init = None
@@ -2643,9 +2682,7 @@ def simulate_and_infer(
 
     priors_used = state_priors_used + param_priors
 
-    # ------------------------------------------------------------------
-    # 1) Nonlinear MAP via either direct optimization or generalized EM
-    # ------------------------------------------------------------------
+    # Nonlinear MAP via direct optimization or generalized EM
     if nonlinear_inference == "optimize":
         res_nonlinear = minimize(
             fun=lambda x: neg_log_posterior(
@@ -2701,9 +2738,7 @@ def simulate_and_infer(
         lambda_map_nonlinear_natural = x_map_nonlinear
         lambda_map_nonlinear_log = _to_log_params(lambda_map_nonlinear_natural)
 
-    # ------------------------------------------------------------------
-    # 2) Freeze linearization at nonlinear estimate
-    # ------------------------------------------------------------------
+    # Freeze the linearization at the nonlinear estimate.
     Hk, ck, kalman_phases = freeze_linearization(
         tuple(x_map_nonlinear),
         data,
@@ -2711,9 +2746,7 @@ def simulate_and_infer(
         param_mode=param_type,
     )
 
-    # ------------------------------------------------------------------
-    # 3) Frozen-model MAP using consistent frozen objective/gradient
-    # ------------------------------------------------------------------
+    # Optimize the frozen-model MAP with its matching objective and gradient.
     res_frozen = minimize(
         fun=lambda x: neg_log_posterior_frozen(
             x, data, priors_used, Hk, ck, param_mode=param_type
@@ -2739,10 +2772,8 @@ def simulate_and_infer(
         lambda_map_frozen_log = _to_log_params(lambda_map_frozen_natural)
         lambda_true_same = param_true_natural
 
-    # ------------------------------------------------------------------
-    # 4) Posterior information for frozen model
-    #    evaluated at frozen MAP, but with Hk, ck frozen at nonlinear MAP
-    # ------------------------------------------------------------------
+    # Evaluate frozen-model information at its MAP while retaining Hk and ck
+    # from the nonlinear MAP.
     post = posterior_information_frozen(
         tuple(x_map_frozen), data, priors_used, Hk, ck, param_type=param_type
     )

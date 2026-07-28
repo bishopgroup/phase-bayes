@@ -105,31 +105,28 @@ def kalman_filter(param, data, state_priors, *, validate=False):
         - Python arrays are 0..N-1, but element i corresponds to SI index k=i+1.
         - tk[i] should equal (i+1)*dt (uniform spacing assumed).
 
-    Inputs
-    ------
-    param  : (omega, Dtheta, R)
-        omega  : drift rate (angular frequency)
-        Dtheta : phase diffusivity (>=0)
-        R      : measurement-noise variance (>=0)
+    Parameters
+    ----------
+    param : tuple[float, float, float]
+        ``(omega, Dtheta, R)``: drift rate, phase diffusivity, and
+        measurement-noise variance.
+    data : tuple[ndarray, ndarray]
+        ``(tk, yk)`` containing uniformly spaced times and measurements.
+    state_priors : tuple[float, float]
+        ``(mu_theta, sigma_theta)`` defining the prior for θ_1.
+    validate : bool, optional
+        Perform basic input and parameter checks.
 
-    data   : (tk, yk)
-        tk : times, shape (N,), uniformly spaced
-        yk : measurements, shape (N,)
-
-    priors : (mu_theta, sigma_theta, ...)
-        mu_theta    : prior mean for θ_1
-        sigma_theta : prior std for θ_1
-        Remaining entries are ignored by this function.
-
-    validate : bool (default False)
-        If True, do basic sanity checks (helpful while debugging).
-
-    Outputs
+    Returns
     -------
-    thetakk   : θ̂_{k|k}    filtered posterior mean, shape (N,)
-    Pkk       : P_{k|k}    filtered posterior variance, shape (N,)
-    thetakk_1 : θ̂_{k|k-1}  predicted mean, shape (N,)
-    Pkk_1     : P_{k|k-1}  predicted variance, shape (N,)
+    thetakk : ndarray, shape (N,)
+        Filtered posterior means θ̂_{k|k}.
+    Pkk : ndarray, shape (N,)
+        Filtered posterior variances P_{k|k}.
+    thetakk_1 : ndarray, shape (N,)
+        Predicted means θ̂_{k|k-1}.
+    Pkk_1 : ndarray, shape (N,)
+        Predicted variances P_{k|k-1}.
     """
     omega, Dtheta, R = param
     tk, yk = data
@@ -157,7 +154,7 @@ def kalman_filter(param, data, state_priors, *, validate=False):
         if sigma_theta < 0:
             raise ValueError(f"sigma_theta must be >= 0; got {sigma_theta!r}")
 
-    # Helper scalars
+    # Per-step process variance, deterministic drift, and inverse measurement variance
     Q  = 2.0 * Dtheta * dt          # process noise variance per step (k-1 -> k)
     wt = omega * dt                 # deterministic drift per step
     invR = 0.0 if R == 0.0 else 1.0 / R
@@ -235,8 +232,8 @@ def neg_log_marginal_likelihood(param, data, state_priors, *, param_mode="log", 
     data : tuple[ndarray, ndarray]
         (tk, yk) with tk uniformly spaced.
 
-    priors : tuple
-        (mu_theta, sigma_theta, ...) only first two entries used.
+    state_priors : tuple[float, float]
+        ``(mu_theta, sigma_theta)`` defining the prior for θ_1.
 
     param_mode : {"natural", "log"}, optional
         Choose whether to interpret param as (omega, Dtheta, R) or (omega, lnDtheta, lnR).
@@ -285,7 +282,7 @@ def neg_log_marginal_likelihood(param, data, state_priors, *, param_mode="log", 
     wt = omega * dt
     log2pi = np.log(2.0 * np.pi)
 
-    # ---- k = 1: predicted state is the prior on θ_1 ----
+    # At k = 1, the predicted state is the prior on θ_1.
     theta_pred = mu_theta
     P_pred = sigma_theta**2
 
@@ -306,7 +303,7 @@ def neg_log_marginal_likelihood(param, data, state_priors, *, param_mode="log", 
     theta_filt = theta_pred + K * innov
     P_filt = (1.0 - K) * P_pred
 
-    # ---- k = 2..N ----
+    # Propagate and update for k = 2..N.
     for k in range(1, N):
         # Predict
         theta_pred = theta_filt + wt
@@ -389,17 +386,17 @@ def neg_log_prior(param, param_priors, *, param_mode="log", validate=False):
 
     nlp = 0.0
 
-    # ---- Normal prior on omega (omit constants) ----
+    # Normal prior on omega, omitting constants
     nlp += 0.5 * ((omega - mu_omega) / sigma_omega) ** 2
 
-    # ---- Inverse-Gamma priors (omit constants) ----
+    # Inverse-gamma priors, omitting constants
     # IG(α, β): p(x) ∝ x^(-α-1) exp(-β/x)
     # => -log p(x) = (α+1) log x + β/x  (up to additive constant)
 
     nlp += (alpha_D + 1.0) * np.log(Dtheta) + beta_D / Dtheta
     nlp += (alpha_R + 1.0) * np.log(R) + beta_R / R
 
-    # ---- Jacobian correction for log-parameterization ----
+    # Jacobian correction for the log parameterization
     if param_mode == "log":
         # -log p(ln x) = -log p(x) - ln x
         nlp -= lnDtheta
@@ -414,9 +411,8 @@ def neg_log_posterior(param, data, priors, *, param_mode="log", validate=False):
 
         nlp = -log p(y_{1:N} | omega, Dtheta, R) - log p(omega, Dtheta, R)
 
-    This combines:
-      1) neg_log_marginal_likelihood(...)  [no priors on omega, Dtheta, R]
-      2) neg_log_prior(...)                [priors on omega, Dtheta, R only; unnormalized]
+    This combines the marginal likelihood with the unnormalized parameter
+    prior.
 
     Parameters
     ----------
@@ -426,15 +422,12 @@ def neg_log_posterior(param, data, priors, *, param_mode="log", validate=False):
         If param_mode == "natural":
             (omega, Dtheta, R)
 
-    data : (tk, yk)
-        See neg_log_marginal_likelihood.
+    data : tuple[ndarray, ndarray]
+        ``(tk, yk)`` containing uniformly spaced times and measurements.
 
     priors : tuple
-        (mu_theta, sigma_theta, mu_omega, sigma_omega, alpha_D, beta_D, alpha_R, beta_R)
-
-        Note: This function splits priors internally into:
-            state_priors = (mu_theta, sigma_theta, ...)
-            param_priors = (mu_omega, sigma_omega, alpha_D, beta_D, alpha_R, beta_R)
+        ``(mu_theta, sigma_theta, mu_omega, sigma_omega, alpha_D, beta_D,
+        alpha_R, beta_R)``.
 
     param_mode : {"log", "natural"}, default "log"
     validate : bool, optional
@@ -467,24 +460,27 @@ def rts_smoother(param, data, kalman_phases, *, validate=False):
       - Arrays are length N; Python index i corresponds to SI index k=i+1.
       - Prior is on θ_1; process noise Q applies only to transitions k>=2.
 
-    Inputs
-    ------
-    param : (omega, Dtheta, R)
-    data : (tk, yk)
-    kalman_phases : (thetakk, Pkk, thetakk_1, Pkk_1)
-        outputs of kalman_filter:
-          thetakk   : θ̂_{k|k}
-          Pkk       : P_{k|k}
-          thetakk_1 : θ̂_{k|k-1}
-          Pkk_1     : P_{k|k-1}
+    Parameters
+    ----------
+    param : tuple[float, float, float]
+        ``(omega, Dtheta, R)`` in natural coordinates.
+    data : tuple[ndarray, ndarray]
+        ``(tk, yk)`` containing times and measurements.
+    kalman_phases : tuple[ndarray, ndarray, ndarray, ndarray]
+        Filtered means, filtered variances, predicted means, and predicted
+        variances returned by :func:`kalman_filter`.
+    validate : bool, optional
+        Check that the filter outputs and time grid are consistent.
 
     Returns
     -------
-    thetakN : θ̂_{k|N}     smoothed mean
-    PkN     : P_{k|N}      smoothed variance
-    Sigmakk_1 : Σ_{k,k-1|N} lag-one smoothed covariance (lower diagonal)
-        Convention: Sigmakk_1[i] corresponds to Σ_{k=i+1, k-1=i|N}.
-        Entries Sigmakk_1[0] (k=1) is meaningless and set to 0.
+    thetakN : ndarray, shape (N,)
+        Smoothed means θ̂_{k|N}.
+    PkN : ndarray, shape (N,)
+        Smoothed variances P_{k|N}.
+    Sigmakk_1 : ndarray, shape (N,)
+        Lag-one smoothed covariances. Element ``i`` corresponds to
+        Σ_{i+1,i|N}; element zero is unused and set to zero.
     """
     omega, Dtheta, R = param
     tk, yk = data
@@ -543,8 +539,8 @@ def theta_covariance(param, N, dt, state_priors, *, validate=False):
 
     Parameters
     ----------
-    param : (omega, Dtheta, R)
-        omega is unused (covariance does not depend on drift).
+    param : tuple[float, float, float]
+        ``(omega, Dtheta, R)``. The covariance is independent of ``omega``.
 
     N : int
         Number of time steps.
@@ -552,8 +548,11 @@ def theta_covariance(param, N, dt, state_priors, *, validate=False):
     dt : float
         Time step.
 
-    state_priors : (mu_theta, sigma_theta)
-        Only sigma_theta affects the covariance.
+    state_priors : tuple[float, float]
+        ``(mu_theta, sigma_theta)``. Only ``sigma_theta`` affects the
+        covariance.
+    validate : bool, optional
+        Check positivity requirements for the covariance calculation.
 
     Returns
     -------
@@ -640,14 +639,27 @@ def grad_neg_log_posterior(
         param = (omega, Dtheta, R)
         Returns: ∇_{(omega, Dtheta, R)} nlp
 
-    Priors on parameters (as in your code)
-    --------------------------------------
+    Parameter priors
+    ----------------
         omega  ~ Normal(mu_omega, sigma_omega^2)
         Dtheta ~ Inverse-Gamma(alpha_D, beta_D)     (shape α, scale β)
         R      ~ Inverse-Gamma(alpha_R, beta_R)
 
-    Note: we assume `priors` has the same layout used elsewhere in this file:
-        priors = (mu_theta, sigma_theta, mu_omega, sigma_omega, alpha_D, beta_D, alpha_R, beta_R)
+    Parameters
+    ----------
+    param : tuple[float, float, float]
+        Model parameters in the coordinates selected by ``param_mode``.
+    data : tuple[ndarray, ndarray]
+        ``(tk, yk)`` containing uniformly spaced times and measurements.
+    priors : tuple
+        ``(mu_theta, sigma_theta, mu_omega, sigma_omega, alpha_D, beta_D,
+        alpha_R, beta_R)``.
+    param_mode : {"log", "natural"}, optional
+        Coordinates used for ``param`` and the returned gradient.
+    validate : bool, optional
+        Perform basic input and parameter checks.
+    return_aux : bool, optional
+        Return intermediate smoothing statistics when true.
 
     Returns
     -------
@@ -658,10 +670,6 @@ def grad_neg_log_posterior(
         If return_aux=True, also returns intermediate quantities:
         smoothed means/variances, expected sufficient stats, and the score.
 
-    Dependencies
-    ------------
-    Requires: kalman_filter(...), rts_smoother(...)
-    which are defined in this module. :contentReference[oaicite:1]{index=1}
     """
     tk, yk = data
     yk = np.asarray(yk, dtype=float).ravel()
@@ -670,11 +678,11 @@ def grad_neg_log_posterior(
     if N < 2:
         raise ValueError("Need N >= 2 for the increment statistics in the Louis score.")
 
-    # unpack priors (same ordering used by neg_log_posterior in this file)
+    # Unpack priors using the module-wide ordering.
     mu_theta, sigma_theta, mu_omega, sigma_omega, alpha_D, beta_D, alpha_R, beta_R = priors
     state_priors = (mu_theta, sigma_theta)
 
-    # interpret parameters
+    # Interpret parameters in natural coordinates.
     if param_mode == "log":
         omega, lnDtheta, lnR = param
         Dtheta = float(np.exp(lnDtheta))
@@ -685,13 +693,13 @@ def grad_neg_log_posterior(
         R = float(R)
         if validate and (Dtheta <= 0 or R <= 0):
             raise ValueError("For param_mode='natural', require Dtheta > 0 and R > 0.")
-        # for convenience downstream, define their logs too
+        # Retain log coordinates for optional diagnostic output.
         lnDtheta = float(np.log(Dtheta))
         lnR = float(np.log(R))
     else:
         raise ValueError(f"param_mode must be 'log' or 'natural'; got {param_mode!r}")
 
-    # basic time step
+    # Uniform time step
     dt = float(tk[1] - tk[0])
 
     if validate:
@@ -708,16 +716,11 @@ def grad_neg_log_posterior(
         if Dtheta <= 0 or R <= 0:
             raise ValueError("Require Dtheta > 0 and R > 0.")
 
-    # ------------------------------------------------------------
-    # 1) Run filter + RTS smoother to get p(theta | y, lambda)
-    # ------------------------------------------------------------
+    # Run the filter and smoother to obtain p(theta | y, lambda).
     kalman_phases = kalman_filter((omega, Dtheta, R), (tk, yk), state_priors, validate=validate)
     thetakN, PkN, Sigmakk_1 = rts_smoother((omega, Dtheta, R), (tk, yk), kalman_phases, validate=validate)
 
-    # ------------------------------------------------------------
-    # 2) Expected sufficient statistics under smoothing distribution
-    #    (matches your SI and your existing neg_score)
-    # ------------------------------------------------------------
+    # Expected sufficient statistics under the smoothing distribution
     # E[S0 | y,lambda] = sum_k E[(Δθ_k)^2] where Δθ_k = θ_k - θ_{k-1}
     dtheta_mean = thetakN[1:] - thetakN[:-1]
     ES0 = np.sum(dtheta_mean**2 + PkN[1:] + PkN[:-1] - 2.0 * Sigmakk_1[1:])
@@ -732,10 +735,7 @@ def grad_neg_log_posterior(
     wdt = omega * dt
     M = N - 1  # number of increments
 
-    # ------------------------------------------------------------
-    # 3) Score (gradient of log posterior) in log-coordinates:
-    #    (omega, lnDtheta, lnR)
-    # ------------------------------------------------------------
+    # Score of the log posterior in (omega, lnDtheta, lnR) coordinates
     score_log = np.zeros(3, dtype=float)
 
     # omega: Normal prior + Louis likelihood term
@@ -763,9 +763,7 @@ def grad_neg_log_posterior(
     # nlp = -log posterior  =>  ∇ nlp = - score
     grad_log = -score_log
 
-    # ------------------------------------------------------------
-    # 4) Convert to requested coordinates if needed
-    # ------------------------------------------------------------
+    # Convert the gradient to the requested coordinates.
     if param_mode == "log":
         grad = grad_log
     else:
@@ -840,9 +838,7 @@ def em_update(old_param, data, priors,
 
     tk, yk = data
 
-    # --------------------------------------------------
-    # Unpack priors
-    # --------------------------------------------------
+    # Unpack priors.
     mu_theta, sigma_theta, \
     mu_omega, sigma_omega, \
     alpha_D, beta_D, \
@@ -850,9 +846,7 @@ def em_update(old_param, data, priors,
 
     state_priors = (mu_theta, sigma_theta)
 
-    # --------------------------------------------------
-    # Convert parameters to natural scale if needed
-    # --------------------------------------------------
+    # Convert parameters to natural coordinates.
     if param_mode == "natural":
         omega, Dtheta, R = old_param
     elif param_mode == "log":
@@ -862,15 +856,11 @@ def em_update(old_param, data, priors,
     else:
         raise ValueError("param_mode must be 'natural' or 'log'")
 
-    # --------------------------------------------------
-    # E-step: Kalman filter + RTS smoother
-    # --------------------------------------------------
+    # E-step: Kalman filter and RTS smoother
     kalman_phases = kalman_filter((omega, Dtheta, R), data, state_priors)
     thetakN, PkN, Sigmakk_1 = rts_smoother((omega, Dtheta, R), data, kalman_phases)
 
-    # --------------------------------------------------
-    # Compute sufficient statistics
-    # --------------------------------------------------
+    # Expected sufficient statistics
     N = yk.shape[0]
     dt = tk[1] - tk[0]
 
@@ -886,15 +876,12 @@ def em_update(old_param, data, priors,
     # Expected measurement residual energy
     ESy = np.sum((thetakN - yk)**2 + PkN)
 
-    # --------------------------------------------------
     # M-step updates (MAP under conjugate priors)
-    # --------------------------------------------------
-
-    # ---- Update omega (Gaussian prior)
+    # Update omega under its Gaussian prior.
     omega_new = (ES1 / (2 * Dtheta) + mu_omega / sigma_omega**2) \
               / ((N - 1) * dt / (2 * Dtheta) + 1 / sigma_omega**2)
 
-    # ---- Update Dtheta (Inverse-Gamma prior)
+    # Update Dtheta under its inverse-gamma prior.
     wdt = omega_new * dt
 
     if param_mode == "natural":
@@ -986,7 +973,7 @@ def em_map_parameters(
 
     for i in range(1, max_iter):
 
-        # --- EM update ---
+        # EM update
         lambda_iter[i] = em_update(
             lambda_iter[i-1],
             data,
@@ -994,13 +981,13 @@ def em_map_parameters(
             param_mode=param_mode
         )
 
-        # --- Relative change ---
+        # Relative parameter change
         denom = np.maximum(np.abs(lambda_iter[i-1]), 1e-12)
         rel_change = np.max(
             np.abs(lambda_iter[i] - lambda_iter[i-1]) / denom
         )
 
-        # --- Progress print ---
+        # Progress output
         if verbose and (i % print_every == 0 or i == 1):
             print(
                 "%d\t%.5e\t%.5e\t%.5e"
@@ -1012,7 +999,7 @@ def em_map_parameters(
                 )
             )
 
-        # --- Convergence ---
+        # Convergence check
         if rel_change < tol:
             converged = True
             if verbose:
@@ -1043,11 +1030,18 @@ def prior_information(lambda_map, priors, param_type="natural"):
         If param_type == "natural": (omega, Dtheta, R)
         If param_type == "log":     (omega, logDtheta, logR)
 
-    param_priors : tuple
-        (mu_omega, sigma_omega, alpha_D, beta_D, alpha_R, beta_R)
+    priors : tuple
+        ``(mu_theta, sigma_theta, mu_omega, sigma_omega, alpha_D, beta_D,
+        alpha_R, beta_R)``.
 
-    param_type : str
-        "natural" or "log"
+    param_type : {"natural", "log"}, optional
+        Coordinates used for ``lambda_map`` and the returned information
+        matrix.
+
+    Returns
+    -------
+    I_prior : ndarray, shape (3, 3)
+        Negative Hessian of the log prior.
 
     Notes
     -----
@@ -1090,8 +1084,21 @@ def prior_information(lambda_map, priors, param_type="natural"):
 
 def complete_data_information(lambda_map, statistics, param_type="log"):
     """
-    I_comp = -E[ ∇^2 ell_c | y, lambda ] computed from smoothing statistics.
-    Returns in coordinates specified by param_type.
+    Compute expected complete-data information from smoothing statistics.
+
+    Parameters
+    ----------
+    lambda_map : tuple[float, float, float]
+        MAP parameters in the coordinates selected by ``param_type``.
+    statistics : dict
+        Reusable output from :func:`smoothing_statistics`.
+    param_type : {"log", "natural"}, optional
+        Coordinates used for the returned information matrix.
+
+    Returns
+    -------
+    I_comp : ndarray, shape (3, 3)
+        ``-E[∇² ell_c | y, lambda]`` in the requested coordinates.
     """
     omega, Dtheta, R = statistics["lambda_natural"]
     N = statistics["N"]
@@ -1129,12 +1136,27 @@ def complete_data_information(lambda_map, statistics, param_type="log"):
 
 def missing_information(lambda_map, statistics, priors, param_type="log") -> np.ndarray:
     """
-    Exact I_miss = Cov(score_c | y, lambda), computed using banded solves
-    and streaming trace identities, using precomputed smoother mean m.
+    Compute exact missing information using banded linear solves.
 
-    Returns in coordinates specified by param_type:
-      - log:     [omega, ln Dtheta, ln R]
-      - natural: [omega, Dtheta, R]
+    The calculation evaluates ``Cov(score_c | y, lambda)`` using the
+    precomputed smoother mean and streaming trace identities.
+
+    Parameters
+    ----------
+    lambda_map : tuple[float, float, float]
+        MAP parameters in the coordinates selected by ``param_type``.
+    statistics : dict
+        Reusable output from :func:`smoothing_statistics`.
+    priors : tuple
+        Model and parameter prior hyperparameters. Retained for interface
+        consistency with the other information functions.
+    param_type : {"log", "natural"}, optional
+        Coordinates used for the returned information matrix.
+
+    Returns
+    -------
+    I_miss : ndarray, shape (3, 3)
+        Missing-information matrix in the requested coordinates.
     """
     y = statistics["yk"]
     m = statistics["m"]
@@ -1302,8 +1324,25 @@ def missing_information(lambda_map, statistics, priors, param_type="log") -> np.
 
 def smoothing_statistics(lambda_map, data, priors, param_type="log"):
     """
-    Run KF + RTS once (always in natural params) and return a dict of
-    reusable statistics for information calculations.
+    Compute reusable smoothing statistics for information calculations.
+
+    Parameters
+    ----------
+    lambda_map : tuple[float, float, float]
+        MAP parameters in the coordinates selected by ``param_type``.
+    data : tuple[ndarray, ndarray]
+        ``(tk, yk)`` containing uniformly spaced times and measurements.
+    priors : tuple
+        ``(mu_theta, sigma_theta, mu_omega, sigma_omega, alpha_D, beta_D,
+        alpha_R, beta_R)``.
+    param_type : {"log", "natural"}, optional
+        Coordinates used for ``lambda_map``.
+
+    Returns
+    -------
+    statistics : dict
+        Natural-coordinate parameters, smoothed moments, and expected
+        sufficient statistics used by the information calculations.
     """
     tk, yk = data
     yk = np.asarray(yk, dtype=float).ravel()
@@ -1315,7 +1354,7 @@ def smoothing_statistics(lambda_map, data, priors, param_type="log"):
      alpha_D, beta_D,
      alpha_R, beta_R) = priors
 
-    # Map input -> natural params for filter/smoother
+    # Convert input to natural coordinates for filtering and smoothing.
     if param_type == "natural":
         omega, Dtheta, R = lambda_map
     elif param_type == "log":
@@ -1329,7 +1368,7 @@ def smoothing_statistics(lambda_map, data, priors, param_type="log"):
 
     state_priors = (mu_theta, sigma_theta)
 
-    # Filter + Smooth (assumed to take natural params)
+    # Filter and smooth in natural coordinates.
     kalman_phases = kalman_filter(lambda_nat, data, state_priors)
     thetakN, PkN, Sigmakk_1 = rts_smoother(lambda_nat, data, kalman_phases)
 
@@ -1351,9 +1390,9 @@ def smoothing_statistics(lambda_map, data, priors, param_type="log"):
         "yk": yk,
         "dt": dt,
         "N": N,
-        "m": thetakN,                 # smoother mean
-        "PkN": PkN,                   # marginal variances (may be unused)
-        "Sigmakk_1": Sigmakk_1,       # lag-1 cov (may be unused)
+        "m": thetakN,                 # smoothed mean
+        "PkN": PkN,                   # smoothed marginal variances
+        "Sigmakk_1": Sigmakk_1,       # smoothed lag-one covariances
         "lambda_natural": lambda_nat, # (omega, Dtheta, R)
         "ES0": ES0,
         "ES1": ES1,
@@ -1379,30 +1418,23 @@ def posterior_information(lambda_map, data, priors, param_type="log"):
     priors : tuple
         Prior hyperparameters (see above).
 
-    param_type : str
-        "log" (default) or "natural"
+    param_type : {"log", "natural"}, optional
+        Coordinates used for ``lambda_map`` and all returned matrices.
 
     Returns
     -------
     out : dict
-        {
-          "I_prior": ...,
-          "I_comp":  ...,
-          "I_miss":  ...,
-          "I_obs":   ...,
-          "cov":     inv(I_obs),
-          "rho":     spectral radius of (I_miss @ inv(I_prior + I_comp)),
-          "em_rate": -log(rho),
-          "stats":   smoothing statistics dict (optional but useful)
-        }
+        Prior, complete-data, missing, and observed information matrices;
+        the Laplace covariance; EM convergence diagnostics; and smoothing
+        statistics.
     """
-    # Run smoother once + compute reusable expectations
+    # Run the smoother once and compute reusable expectations.
     stats = smoothing_statistics(lambda_map, data, priors, param_type=param_type)
 
-    # Prior information (your corrected natural/log Hessians)
+    # Prior information in the requested coordinates
     I_prior = prior_information(lambda_map, priors, param_type=param_type)
 
-    # Complete-data and missing information (no additional smoothing)
+    # Complete-data and missing information without additional smoothing
     I_comp = complete_data_information(lambda_map, stats, param_type=param_type)
     I_miss = missing_information(lambda_map, stats, priors, param_type=param_type)
 
@@ -1432,10 +1464,36 @@ def posterior_information(lambda_map, data, priors, param_type="log"):
 
 
 def _to_log_params(param_natural):
+    """
+    Convert model parameters from natural to log coordinates.
+
+    Parameters
+    ----------
+    param_natural : array_like, shape (3,)
+        ``(omega, Dtheta, R)``.
+
+    Returns
+    -------
+    param_log : ndarray, shape (3,)
+        ``(omega, lnDtheta, lnR)``.
+    """
     omega, D, R = param_natural
     return np.array([omega, np.log(D), np.log(R)], dtype=float)
 
 def _to_natural_params(param_log):
+    """
+    Convert model parameters from log to natural coordinates.
+
+    Parameters
+    ----------
+    param_log : array_like, shape (3,)
+        ``(omega, lnDtheta, lnR)``.
+
+    Returns
+    -------
+    param_natural : ndarray, shape (3,)
+        ``(omega, Dtheta, R)``.
+    """
     omega, lnD, lnR = param_log
     return np.array([omega, np.exp(lnD), np.exp(lnR)], dtype=float)
 
@@ -1452,22 +1510,45 @@ def simulate_and_infer(
     return_stats: bool = False,
 ):
     """
-    Simulate data and infer MAP parameters via gradient-based optimization (L-BFGS-B),
-    then compute Laplace covariance from posterior information.
+    Simulate data and infer model parameters with L-BFGS-B.
 
-    IMPORTANT: param_true_natural is ALWAYS interpreted as natural parameters
-               (omega, Dtheta, R), regardless of param_type.
+    The true parameters are always supplied in natural coordinates. The MAP
+    estimate and Laplace covariance use the coordinates selected by
+    ``param_type``.
 
-    Returns a dictionary with truth, MAP, uncertainty, and diagnostics.
+    Parameters
+    ----------
+    param_true_natural : array_like, shape (3,)
+        True ``(omega, Dtheta, R)`` in natural coordinates.
+    N : int
+        Number of samples to simulate.
+    dt : float
+        Time step.
+    rng : numpy.random.Generator
+        Random number generator used for simulation and initialization.
+    priors : tuple
+        ``(mu_theta, sigma_theta, mu_omega, sigma_omega, alpha_D, beta_D,
+        alpha_R, beta_R)``.
+    param_type : {"log", "natural"}, optional
+        Coordinates used for optimization and uncertainty outputs.
+    max_iter : int, optional
+        Maximum number of L-BFGS-B iterations.
+    tol : float, optional
+        Function-value convergence tolerance.
+    return_stats : bool, optional
+        Include smoothing statistics in the returned dictionary.
 
-    Added benchmark-friendly outputs:
-      - stderr (sqrt diag covariance) in chosen parameterization
-      - zscore_true = (lambda_map - lambda_true_in_same_coords)/stderr
+    Returns
+    -------
+    out : dict
+        Simulated data, optimizer diagnostics, MAP estimates in both
+        coordinate systems, information matrices, Laplace covariance,
+        standard errors, z-scores, and EM-rate diagnostics.
     """
     if param_type not in ("log", "natural"):
         raise ValueError("param_type must be 'log' or 'natural'")
 
-    # --- Unpack priors ---
+    # Unpack priors.
     mu_theta, sigma_theta, \
     mu_omega, sigma_omega, \
     alpha_D, beta_D, \
@@ -1475,18 +1556,18 @@ def simulate_and_infer(
 
     state_priors = (mu_theta, sigma_theta)
     
-    # --- Truth (always natural) ---
+    # True parameters are always supplied in natural coordinates.
     param_true_natural = np.array(param_true_natural, dtype=float)
     omega_true, D_true, R_true = param_true_natural
     if D_true <= 0 or R_true <= 0:
         raise ValueError("Truth must satisfy Dtheta>0 and R>0.")
     param_true_log = _to_log_params(param_true_natural)
 
-    # --- Simulate (simulate_data assumed natural) ---
+    # Simulate in natural coordinates.
     tk, thetak_true, yk = simulate_data(tuple(param_true_natural), N, dt, rng, state_priors)
     data = (tk, yk)
 
-    # --- Initial guess for optimizer: prior sample (in chosen coordinates) ---
+    # Draw the optimizer's initial point from the parameter priors.
     omega0 = rng.normal(mu_omega, sigma_omega)
 
     # Inverse-gamma sampling via Gamma(shape=α, scale=1/β) on 1/D
@@ -1500,7 +1581,7 @@ def simulate_and_infer(
         x0 = np.array([omega0, D0, R0], dtype=float)
         bounds = [(None, None), (1e-15, None), (1e-15, None)]  # enforce positivity
     
-    # --- MAP via gradient-based optimization ---
+    # MAP estimate via gradient-based optimization
     res = minimize(
         fun=lambda x: neg_log_posterior(x, data, priors, param_mode=param_type),
         x0=x0,
@@ -1512,7 +1593,7 @@ def simulate_and_infer(
 
     x_map = np.array(res.x, dtype=float)  # MAP in chosen parameterization
 
-    # --- MAP in both coordinate systems ---
+    # Express the MAP estimate in both coordinate systems.
     if param_type == "log":
         lambda_map_log = x_map
         lambda_map_natural = _to_natural_params(lambda_map_log)
@@ -1522,7 +1603,7 @@ def simulate_and_infer(
         lambda_map_log = _to_log_params(lambda_map_natural)
         lambda_true_same = param_true_natural
 
-    # --- Posterior information (Laplace) in chosen coordinates ---
+    # Posterior information and Laplace covariance in the selected coordinates
     post = posterior_information(tuple(x_map), data, priors, param_type=param_type)
 
     cov = post["cov"]
@@ -1585,23 +1666,49 @@ def simulate_and_infer(
 
 
 def sample_phases(param, data, priors, rng, N_samples=1000):
-    #### Kalman Filter
+    """
+    Draw latent phase trajectories by forward-filter backward-sampling.
+
+    The function first runs the scalar Kalman filter and then samples backward
+    from the conditional smoothing distributions. Model parameters must be
+    supplied in natural coordinates, and the time grid must satisfy the
+    assumptions of :func:`kalman_filter`.
+
+    Parameters
+    ----------
+    param : tuple[float, float, float]
+        ``(omega, Dtheta, R)`` in natural coordinates.
+    data : tuple[ndarray, ndarray]
+        ``(tk, yk)`` containing uniformly spaced times and measurements.
+    priors : tuple[float, float]
+        ``(mu_theta, sigma_theta)`` defining the prior for θ_1.
+    rng : numpy.random.Generator
+        Random number generator used for backward sampling.
+    N_samples : int, optional
+        Number of phase trajectories to draw.
+
+    Returns
+    -------
+    theta_samples : ndarray, shape (N_samples, N)
+        Sampled latent phase trajectories, one per row.
+    """
+    # Forward filtering
     thetakk, Pkk, thetakk_1, Pkk_1 = kalman_filter(param, data, priors)
     
-    #### Forward-Filter Backward-Sample (FFBS)
+    # Backward sampling
     N = thetakk.shape[0]
     theta_samples = np.zeros((N_samples,N))
 
-    # initialize for k = N
+    # Initialize at k = N.
     k = N-1
     theta_samples[:,k] = rng.normal(loc=thetakk[k], scale=np.sqrt(Pkk[k]), size=N_samples)
     
-    # iterate backward   
+    # Sample each preceding state conditionally.
     Jk = Pkk[:-1] / Pkk_1[1:]
     for k in range(N-1,0,-1):
-        # mean
+        # Conditional mean
         mean = thetakk[k-1] + Jk[k-1]*(theta_samples[:,k] - thetakk_1[k])
-        # variance
+        # Conditional variance
         var = Pkk[k-1] - Jk[k-1] * Pkk_1[k] * Jk[k-1]
         # sample
         theta_samples[:,k-1] = rng.normal(loc=mean, scale=np.sqrt(var))

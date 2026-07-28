@@ -201,6 +201,18 @@ def q_fourier(theta, A, B):
 def q_fourier_prime(theta, A, B):
     """
     First derivative dq/dtheta of the Fourier waveform.
+
+    Parameters
+    ----------
+    theta : array_like
+        Phase values.
+    A, B : ndarray, shape (M+1,)
+        Fourier coefficients.
+
+    Returns
+    -------
+    qp : ndarray
+        Waveform derivative evaluated at ``theta``.
     """
     theta = np.asarray(theta, dtype=float)
 
@@ -236,6 +248,18 @@ def pack_param(omega, lnDtheta, lnR, A, B):
     Free coefficients:
         A[0], A[1], ..., A[M]
         B[2], ..., B[M]
+
+    Parameters
+    ----------
+    omega, lnDtheta, lnR : float
+        Phase frequency, log diffusivity, and log observation variance.
+    A, B : array_like, shape (M+1,)
+        Fourier coefficients satisfying the gauge convention.
+
+    Returns
+    -------
+    x : ndarray
+        Flat optimization vector.
     """
     A = np.asarray(A, dtype=float)
     B = np.asarray(B, dtype=float)
@@ -262,6 +286,20 @@ def unpack_param(x, M):
 
     The flat vector is interpreted as
         [omega, lnDtheta, lnR, A[0], ..., A[M], B[2], ..., B[M]].
+
+    Parameters
+    ----------
+    x : array_like
+        Flat optimization vector.
+    M : int
+        Maximum Fourier mode.
+
+    Returns
+    -------
+    omega, lnDtheta, lnR : float
+        Phase frequency, log diffusivity, and log observation variance.
+    A, B : ndarray, shape (M+1,)
+        Fourier coefficients with ``B[0] = B[1] = 0``.
     """
     x = np.asarray(x, dtype=float)
 
@@ -294,6 +332,23 @@ def unpack_param(x, M):
 
 
 def glycolytic_rhs(t, x, a, b):
+    """
+    Evaluate the deterministic glycolytic-oscillator dynamics.
+
+    Parameters
+    ----------
+    t : float
+        Time. Included for compatibility with ODE solvers.
+    x : array_like, shape (2,)
+        Oscillator state ``(x1, x2)``.
+    a, b : float
+        Glycolytic-oscillator parameters.
+
+    Returns
+    -------
+    dxdt : ndarray, shape (2,)
+        Time derivative of the oscillator state.
+    """
     x1, x2 = x
     return np.array([
         -x1 + a * x2 + x1**2 * x2,
@@ -315,6 +370,27 @@ def find_glycolytic_limit_cycle(
     """
     Integrate the noise-free glycolytic oscillator, identify one limit-cycle
     period, and set phase zero at the point where x1 is minimal.
+
+    Parameters
+    ----------
+    a, b : float
+        Glycolytic-oscillator parameters.
+    x0 : array_like, shape (2,), optional
+        Initial state. A perturbed fixed point is used when omitted.
+    t_transient : float, optional
+        Integration time used to approach the attracting limit cycle.
+    t_cycle : float, optional
+        Integration interval used to identify complete cycles.
+    n_cycle : int, optional
+        Number of phase samples in the returned cycle.
+    rtol, atol : float, optional
+        Relative and absolute ODE-solver tolerances.
+
+    Returns
+    -------
+    out : dict
+        Limit-cycle period, angular frequency, phase and time grids, sampled
+        orbit and waveform, and periodic interpolants.
     """
     if x0 is None:
         # Perturb away from the fixed point.
@@ -421,6 +497,33 @@ def simulate_glycolytic_data(
     Phase convention
     ----------------
     Phase zero is the point on the deterministic limit cycle where x1 is minimal.
+
+    Parameters
+    ----------
+    N : int
+        Number of observations.
+    dt : float
+        Observation interval.
+    R : float
+        Measurement-noise variance.
+    a, b : float
+        Glycolytic-oscillator parameters.
+    Dx : float
+        Isotropic state-noise diffusivity.
+    dt_integrate : float
+        Euler--Maruyama integration step.
+    rng : numpy.random.Generator
+        Random number generator.
+    initial_phase : float, optional
+        Initial phase on the deterministic limit cycle.
+    x0 : array_like, shape (2,), optional
+        Initial state used while finding the deterministic limit cycle.
+    t_transient, t_cycle : float, optional
+        Integration intervals used to identify the limit cycle.
+    n_cycle : int, optional
+        Number of phase samples in the deterministic cycle.
+    validate : bool, optional
+        Perform basic input and parameter checks.
 
     Returns
     -------
@@ -541,14 +644,14 @@ def estimate_frequency_fft(data, pad_factor=4, detrend=True, window=True):
         yk : array, shape (N,) or (N, d)
              If multi-dimensional, will be reduced to 1D signal.
 
-    pad_factor : int (default 4)
-        Zero-padding factor (FFT length = pad_factor * N)
+    pad_factor : int, optional
+        Zero-padding factor; the FFT length is ``pad_factor * N``.
 
-    detrend : bool (default True)
-        Remove mean before FFT
+    detrend : bool, optional
+        Remove the mean before applying the FFT.
 
-    window : bool (default True)
-        Apply Hann window to reduce spectral leakage
+    window : bool, optional
+        Apply a Hann window to reduce spectral leakage.
 
     Returns
     -------
@@ -558,8 +661,8 @@ def estimate_frequency_fft(data, pad_factor=4, detrend=True, window=True):
     f_hat : float
         Estimated frequency (cycles / unit time)
 
-    spectrum : (freqs, power)
-        For debugging/plotting
+    spectrum : tuple[ndarray, ndarray]
+        Frequencies and spectral power for diagnostics or plotting.
     """
 
     tk, yk = data
@@ -569,7 +672,7 @@ def estimate_frequency_fft(data, pad_factor=4, detrend=True, window=True):
     N = len(tk)
     dt = tk[1] - tk[0]
 
-    # --- Convert to scalar signal ---
+    # Reduce multidimensional measurements to a scalar signal.
     if yk.ndim == 2:
         # Robust choice: use principal component (generalizable)
         y_mean = yk.mean(axis=0)
@@ -578,16 +681,16 @@ def estimate_frequency_fft(data, pad_factor=4, detrend=True, window=True):
     else:
         y = yk.copy()
 
-    # --- Detrend ---
+    # Remove the mean.
     if detrend:
         y = y - np.mean(y)
 
-    # --- Windowing ---
+    # Apply a Hann window.
     if window:
         w = np.hanning(N)
         y = y * w
 
-    # --- Zero padding ---
+    # Zero-pad before the FFT.
     Nfft = int(pad_factor * N)
 
     Y = np.fft.rfft(y, n=Nfft)
@@ -640,6 +743,29 @@ def estimate_initial_phase_regression(
 
     This makes the first harmonic purely cosine.  No sign convention on A[1]
     is imposed here; in particular, A[1] is allowed to be negative.
+
+    Parameters
+    ----------
+    data : tuple or dict
+        ``(tk, yk)`` or a dictionary containing ``"tk"`` and ``"yk"``.
+    omega_hat : float
+        Estimated angular frequency.
+    window_size : int
+        Number of initial observations used in the regression.
+    R : float
+        Observation-noise variance used for coefficient uncertainty.
+    M : int, optional
+        Maximum Fourier mode.
+    start_index : int, optional
+        First observation included in the fitting window.
+    validate : bool, optional
+        Perform basic input and parameter checks.
+
+    Returns
+    -------
+    result : dict
+        Anchored phase estimate and uncertainty, rotated and raw Fourier
+        coefficients, coefficient covariance, fit indices, and fitted values.
     """
     if isinstance(data, dict):
         tk = np.asarray(data["tk"], dtype=float)
@@ -762,6 +888,19 @@ def estimate_initial_phase_regression(
 
 
 def wrap_to_pi(x):
+    """
+    Wrap angles to the interval ``[-pi, pi)``.
+
+    Parameters
+    ----------
+    x : array_like
+        Angles in radians.
+
+    Returns
+    -------
+    wrapped : ndarray
+        Wrapped angles.
+    """
     return (x + np.pi) % (2.0 * np.pi) - np.pi
 
 
@@ -772,8 +911,20 @@ def wrapped_gaussian_kernel(theta_grid, mean_step, Q):
         theta_k = theta_{k-1} + mean_step + noise,
         noise ~ N(0, Q)
 
-    Returns kernel[d] proportional to p(theta_j | theta_i)
-    where d corresponds to theta_j - theta_i.
+    Parameters
+    ----------
+    theta_grid : ndarray, shape (L,)
+        Uniform circular phase grid.
+    mean_step : float
+        Mean phase increment.
+    Q : float
+        Phase-increment variance.
+
+    Returns
+    -------
+    kernel : ndarray, shape (L,)
+        Normalized kernel proportional to ``p(theta_j | theta_i)``, indexed
+        by the circular phase difference.
     """
     dtheta = theta_grid[1] - theta_grid[0]
     delta = wrap_to_pi(theta_grid - mean_step)
@@ -796,6 +947,16 @@ def circular_convolve(kernel, p):
         out[j] = sum_i kernel[j-i] p[i]
 
     Used for the forward prediction step.
+
+    Parameters
+    ----------
+    kernel, p : ndarray, shape (L,)
+        Circular kernel and input distribution.
+
+    Returns
+    -------
+    out : ndarray, shape (L,)
+        Circular convolution of ``kernel`` and ``p``.
     """
     return np.fft.ifft(np.fft.fft(kernel) * np.fft.fft(p)).real
 
@@ -808,6 +969,16 @@ def circular_backward_apply(kernel, g):
                = sum_d kernel[d] g[i+d]
 
     where T[i,j] = kernel[j-i].
+
+    Parameters
+    ----------
+    kernel, g : ndarray, shape (L,)
+        Circular transition kernel and backward message.
+
+    Returns
+    -------
+    out : ndarray, shape (L,)
+        Backward transition applied to ``g``.
     """
     L = len(kernel)
     kernel_rev = kernel[(-np.arange(L)) % L]
@@ -825,7 +996,25 @@ def global_phase_filter(
     """
     Grid-based global phase filter for scalar periodic observations.
 
-    param = (omega, lnDtheta, lnR, A, B)
+    Parameters
+    ----------
+    param : tuple
+        ``(omega, lnDtheta, lnR, A, B)``.
+    data : tuple or dict
+        ``(tk, yk)`` or a dictionary containing ``"tk"`` and ``"yk"``.
+    state_priors : tuple
+        ``(mu_theta, sigma_theta)`` defining the initial phase prior.
+    n_theta : int, optional
+        Number of points in the circular phase grid.
+    validate : bool, optional
+        Perform basic input and parameter checks.
+
+    Returns
+    -------
+    out : dict
+        Phase grid, predicted and filtered distributions, measurement
+        likelihoods, transition kernel, waveform values, normalizers, and
+        marginal log likelihood.
     """
     omega, lnDtheta, lnR, A, B = param
     Dtheta = np.exp(lnDtheta)
@@ -981,7 +1170,9 @@ def global_phase_smoother(filter_out, *, validate=False):
     Parameters
     ----------
     filter_out : dict
-        Output of global_phase_filter(...).
+        Output from :func:`global_phase_filter`.
+    validate : bool, optional
+        Check filter-array shapes and normalization.
 
     Returns
     -------
@@ -993,8 +1184,6 @@ def global_phase_smoother(filter_out, *, validate=False):
         beta : ndarray, shape (N, n_theta)
             Backward messages, normalized.
 
-        xi_pair : optional not returned by default
-            Pairwise distributions can be computed later as needed for EM.
     """
     alpha_filt = np.asarray(filter_out["alpha_filt"], dtype=float)
     likelihood = np.asarray(filter_out["likelihood"], dtype=float)
@@ -1051,10 +1240,21 @@ def sample_phase_trajectories_global(filter_out, n_samples, rng=None):
     Sample phase-index trajectories from the global phase smoothing distribution
     using forward-filter backward-sampling.
 
+    Parameters
+    ----------
+    filter_out : dict
+        Output from :func:`global_phase_filter`.
+    n_samples : int
+        Number of phase trajectories to draw.
+    rng : numpy.random.Generator, optional
+        Random number generator.
+
     Returns
     -------
     theta_samples : ndarray, shape (n_samples, N)
+        Sampled phase trajectories.
     index_samples : ndarray, shape (n_samples, N)
+        Corresponding phase-grid indices.
     """
     if rng is None:
         rng = np.random.default_rng()
@@ -1098,6 +1298,27 @@ def phase_msd_from_samples(
     dt=None,
     subtract_drift=True,
 ):
+    """
+    Estimate phase mean-squared displacement from sampled trajectories.
+
+    Parameters
+    ----------
+    theta_samples : ndarray, shape (S, N)
+        Sampled wrapped phase trajectories.
+    lags : array_like
+        Positive integer lags smaller than ``N``.
+    omega : float, optional
+        Angular frequency used to subtract deterministic drift.
+    dt : float, optional
+        Observation interval.
+    subtract_drift : bool, optional
+        Subtract ``omega * lag * dt`` before computing squared increments.
+
+    Returns
+    -------
+    msd : ndarray
+        Mean-squared wrapped phase increments for each lag.
+    """
     lags = np.asarray(lags, dtype=int)
     S, N = theta_samples.shape
 
@@ -1145,6 +1366,8 @@ def neg_log_marginal_likelihood(
 
     n_theta : int
         Number of phase grid points.
+    validate : bool, optional
+        Perform basic input and parameter checks.
 
     Returns
     -------
@@ -1190,6 +1413,21 @@ def neg_log_prior(param, param_priors, *, validate=False):
 
     Dtheta and R have inverse-gamma priors in natural coordinates, with
     Jacobian corrections included for the log-coordinate posterior.
+
+    Parameters
+    ----------
+    param : tuple
+        ``(omega, lnDtheta, lnR, A, B)``.
+    param_priors : tuple
+        Frequency, diffusivity, observation-noise, waveform-mean, and
+        nonconstant-waveform prior hyperparameters.
+    validate : bool, optional
+        Perform basic parameter and prior checks.
+
+    Returns
+    -------
+    nlp : float
+        Unnormalized negative log prior in log coordinates.
     """
     (
         mu_omega,
@@ -1291,6 +1529,15 @@ def neg_log_posterior(param, data, priors, *, n_theta=256, validate=False):
             mu_A, sigma_A,
             sigma_q,
         )
+    n_theta : int, optional
+        Number of points in the phase grid.
+    validate : bool, optional
+        Pass validation through to the likelihood and prior calculations.
+
+    Returns
+    -------
+    nlp : float
+        Unnormalized negative log posterior.
 
     Notes
     -----
@@ -1346,6 +1593,29 @@ def neg_log_posterior(param, data, priors, *, n_theta=256, validate=False):
 
 
 def _build_global_waveform_mstep_matrices(y, smoother_out, M):
+    """
+    Build sufficient-statistic matrices for the waveform M-step.
+
+    Parameters
+    ----------
+    y : array_like, shape (N,)
+        Scalar observations.
+    smoother_out : dict
+        Output from :func:`global_phase_smoother`.
+    M : int
+        Maximum Fourier mode.
+
+    Returns
+    -------
+    labels : list[tuple[str, int]]
+        Labels for the free Fourier coefficients.
+    G : ndarray
+        Expected feature Gram matrix.
+    rhs : ndarray
+        Observation-feature cross-product vector.
+    y2 : float
+        Sum of squared observations.
+    """
     theta = smoother_out["theta_grid"]
     gamma = smoother_out["gamma"]
 
@@ -1370,6 +1640,23 @@ def _build_global_waveform_mstep_matrices(y, smoother_out, M):
 
 
 def _coeff_arrays_from_vector(coeff, labels, M):
+    """
+    Convert free Fourier coefficients to gauge-fixed arrays.
+
+    Parameters
+    ----------
+    coeff : array_like
+        Free coefficient vector.
+    labels : list[tuple[str, int]]
+        Coefficient labels from :func:`_build_global_waveform_mstep_matrices`.
+    M : int
+        Maximum Fourier mode.
+
+    Returns
+    -------
+    A, B : ndarray, shape (M+1,)
+        Fourier coefficients with ``B[0] = B[1] = 0``.
+    """
     A = np.zeros(M + 1, dtype=float)
     B = np.zeros(M + 1, dtype=float)
 
@@ -1385,6 +1672,33 @@ def _coeff_arrays_from_vector(coeff, labels, M):
 
 
 def _waveform_map_given_R_global(y, smoother_out, M, R, param_priors):
+    """
+    Update waveform coefficients at fixed observation variance.
+
+    Parameters
+    ----------
+    y : array_like, shape (N,)
+        Scalar observations.
+    smoother_out : dict
+        Output from :func:`global_phase_smoother`.
+    M : int
+        Maximum Fourier mode.
+    R : float
+        Fixed observation variance.
+    param_priors : tuple
+        Parameter and waveform prior hyperparameters.
+
+    Returns
+    -------
+    A, B : ndarray, shape (M+1,)
+        MAP Fourier coefficients.
+    G, rhs : ndarray
+        Expected feature Gram matrix and cross-product vector.
+    y2 : float
+        Sum of squared observations.
+    coeff_prior : float
+        Quadratic waveform-prior contribution.
+    """
     (
         mu_omega, sigma_omega,
         alpha_D, beta_D,
@@ -1422,6 +1736,33 @@ def _waveform_map_given_R_global(y, smoother_out, M, R, param_priors):
 
 
 def _waveform_R_map_global(y, smoother_out, M, R0, param_priors):
+    """
+    Jointly update the waveform and observation variance.
+
+    Parameters
+    ----------
+    y : array_like, shape (N,)
+        Scalar observations.
+    smoother_out : dict
+        Output from :func:`global_phase_smoother`.
+    M : int
+        Maximum Fourier mode.
+    R0 : float
+        Initial observation variance for scalar optimization.
+    param_priors : tuple
+        Parameter and waveform prior hyperparameters.
+
+    Returns
+    -------
+    A, B : ndarray, shape (M+1,)
+        Updated Fourier coefficients.
+    R : float
+        Updated observation variance.
+    ESy : float
+        Expected observation residual energy.
+    coeff_prior : float
+        Quadratic waveform-prior contribution.
+    """
     (
         mu_omega, sigma_omega,
         alpha_D, beta_D,
@@ -1466,6 +1807,31 @@ def _waveform_R_map_global(y, smoother_out, M, R0, param_priors):
 
 
 def _phase_dynamics_map_log(ES0, ES1, n_trans, dt, param_priors):
+    """
+    Update phase frequency and diffusivity in log-coordinate MAP estimation.
+
+    Parameters
+    ----------
+    ES0 : float
+        Expected sum of squared phase increments.
+    ES1 : float
+        Expected sum of phase increments.
+    n_trans : int
+        Number of phase transitions.
+    dt : float
+        Observation interval.
+    param_priors : tuple
+        Parameter and waveform prior hyperparameters.
+
+    Returns
+    -------
+    omega_new : float
+        Updated angular frequency.
+    Dtheta_new : float
+        Updated phase diffusivity.
+    B_process : float
+        Expected process residual energy at the update.
+    """
     (
         mu_omega, sigma_omega,
         alpha_D, beta_D,
@@ -1539,6 +1905,30 @@ def global_phase_em_update(
 
     Here R is always inferred/updated. If regularizing noise is desired,
     add it to the data once beforehand, e.g. with add_regularizing_noise(...).
+
+    Parameters
+    ----------
+    old_param : tuple
+        Current ``(omega, lnDtheta, lnR, A, B)`` estimate.
+    data : tuple or dict
+        ``(tk, yk)`` or a dictionary containing ``"tk"`` and ``"yk"``.
+    priors : tuple
+        Initial-phase, parameter, and waveform prior hyperparameters.
+    n_theta : int, optional
+        Number of points in the phase grid.
+    update_waveform : bool, optional
+        Update waveform coefficients and observation variance jointly.
+    validate : bool, optional
+        Perform basic input and parameter checks.
+    return_aux : bool, optional
+        Return filtering, smoothing, and expected-statistic diagnostics.
+
+    Returns
+    -------
+    new_param : tuple
+        Updated ``(omega, lnDtheta, lnR, A, B)`` estimate.
+    aux : dict, optional
+        Intermediate quantities, returned when ``return_aux`` is true.
     """
     if isinstance(data, dict):
         tk = np.asarray(data["tk"], dtype=float)
@@ -1700,6 +2090,34 @@ def global_phase_em_map_parameters(
 
     Here R is always inferred/updated. If regularizing noise is desired,
     add it to the data once beforehand, e.g. with add_regularizing_noise(...).
+
+    Parameters
+    ----------
+    initial_params : tuple
+        Initial ``(omega, lnDtheta, lnR, A, B)`` estimate.
+    data : tuple or dict
+        ``(tk, yk)`` or a dictionary containing ``"tk"`` and ``"yk"``.
+    priors : tuple
+        Initial-phase, parameter, and waveform prior hyperparameters.
+    max_iter : int, optional
+        Maximum number of EM iterations.
+    tol : float, optional
+        Maximum relative-change tolerance.
+    n_theta : int, optional
+        Number of points in the phase grid.
+    update_waveform : bool, optional
+        Update waveform coefficients and observation variance jointly.
+    verbose : bool, optional
+        Print iteration diagnostics.
+    print_every : int, optional
+        Diagnostic-print interval.
+    validate : bool, optional
+        Pass validation through to each EM update.
+
+    Returns
+    -------
+    lambda_iter : list[tuple]
+        Parameter trajectory including the initial estimate.
     """
     lambda_iter = [initial_params]
 
@@ -1763,6 +2181,13 @@ def global_phase_increment_statistics(filter_out, smoother_out):
     """
     Compute wrapped phase-increment statistics from smoothed pairwise distributions.
 
+    Parameters
+    ----------
+    filter_out : dict
+        Output from :func:`global_phase_filter`.
+    smoother_out : dict
+        Output from :func:`global_phase_smoother`.
+
     Returns
     -------
     stats : dict
@@ -1822,6 +2247,13 @@ def global_phase_fourier_statistics(smoother_out, M):
     """
     Compute Fourier moments under smoothed marginal phase distributions.
 
+    Parameters
+    ----------
+    smoother_out : dict
+        Output from :func:`global_phase_smoother`.
+    M : int
+        Maximum Fourier mode.
+
     Returns
     -------
     stats : dict
@@ -1847,6 +2279,20 @@ def global_phase_fourier_statistics(smoother_out, M):
 def expected_observation_error_global(y, smoother_out, A, B):
     """
     Compute E[sum_k (y_k - q(theta_k))^2 | y] using smoothed marginals.
+
+    Parameters
+    ----------
+    y : array_like, shape (N,)
+        Scalar observations.
+    smoother_out : dict
+        Output from :func:`global_phase_smoother`.
+    A, B : ndarray, shape (M+1,)
+        Fourier waveform coefficients.
+
+    Returns
+    -------
+    ESy : float
+        Expected total squared observation error.
     """
     y = np.asarray(y, dtype=float).ravel()
     A = np.asarray(A, dtype=float)

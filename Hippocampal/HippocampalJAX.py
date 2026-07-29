@@ -12,6 +12,16 @@ importlib.reload(HP)
 def fft_integer_modes_jax(n_theta):
     """
     Integer FFT modes for a 2π-periodic grid in JAX.
+
+    Parameters
+    ----------
+    n_theta : int
+        Number of phase-grid points.
+
+    Returns
+    -------
+    modes : jax.Array, shape (n_theta,)
+        Integer Fourier modes in FFT ordering.
     """
     return jnp.fft.fftfreq(n_theta, d=1.0 / n_theta)
 
@@ -24,6 +34,20 @@ def spectral_heat_kernel_hat_jax(n_theta, mean_step, Q):
         noise variance Q = 2 Dtheta dt
 
     K_hat[m] = exp(-i m mean_step - 0.5 m^2 Q)
+
+    Parameters
+    ----------
+    n_theta : int
+        Number of phase-grid points.
+    mean_step : float
+        Mean phase increment.
+    Q : float
+        Phase-increment variance.
+
+    Returns
+    -------
+    K_hat : jax.Array, shape (n_theta,)
+        Spectral drift-diffusion multiplier.
     """
     m = fft_integer_modes_jax(n_theta)
 
@@ -38,11 +62,39 @@ def spectral_predict_jax(p, K_hat):
     Spectral circular prediction.
 
         p_pred = ifft(K_hat * fft(p))
+
+    Parameters
+    ----------
+    p : jax.Array, shape (L,)
+        Circular probability distribution.
+    K_hat : jax.Array, shape (L,)
+        Spectral transition multiplier.
+
+    Returns
+    -------
+    p_pred : jax.Array, shape (L,)
+        Real-valued predicted distribution.
     """
     return jnp.real(jnp.fft.ifft(K_hat * jnp.fft.fft(p)))
 
 def prepare_jax_inputs(fit_data, priors):
-    """Convert NumPy fitting data and prior tuple to JAX arrays."""
+    """
+    Convert fitting data and priors to JAX arrays.
+
+    Parameters
+    ----------
+    fit_data : dict
+        Mapping containing ``"tk"`` and ``"yk"``.
+    priors : tuple
+        Model prior hyperparameters.
+
+    Returns
+    -------
+    tk_jax, yk_jax : jax.Array
+        Observation times and values.
+    priors_jax : tuple[jax.Array, ...]
+        JAX prior scalars.
+    """
     tk_jax = jnp.asarray(fit_data["tk"])
     yk_jax = jnp.asarray(fit_data["yk"])
     priors_jax = tuple(jnp.asarray(p) for p in priors)
@@ -64,6 +116,34 @@ def fit_map_parameters_jax(
 
     This is the gradient-based replacement for the old Powell fit.
     The JAX likelihood uses the spectral grid transition.
+
+    Parameters
+    ----------
+    fit_data : dict
+        Fitting data containing ``"tk"`` and ``"yk"``.
+    priors : tuple
+        Model prior hyperparameters.
+    param0 : tuple
+        Initial structured parameter estimate.
+    M : int
+        Maximum Fourier mode.
+    n_theta : int, optional
+        Number of phase-grid points.
+    method : str, optional
+        SciPy optimizer using the JAX gradient.
+    options : dict, optional
+        Optimizer options.
+
+    Returns
+    -------
+    out : dict
+        Optimization result, MAP estimates, diagnostics, and prepared JAX
+        arrays.
+
+    Notes
+    -----
+    This uses BFGS and autodifferentiated gradients; the JAX-free fallback
+    :func:`Hippocampal.fit_map_parameters` defaults to Powell.
     """
     x0 = HP.pack_param(*param0)
     tk_jax, yk_jax, priors_jax = prepare_jax_inputs(fit_data, priors)
@@ -132,11 +212,34 @@ def summarize_laplace_uncertainty_jax(
 
     Parameters
     ----------
+    x_map : array_like
+        Flat MAP parameter vector.
+    tk_jax, yk_jax : jax.Array
+        Observation times and values.
+    priors_jax : tuple[jax.Array, ...]
+        Model prior hyperparameters.
+    M : int
+        Maximum Fourier mode.
+    n_theta : int, optional
+        Number of phase-grid points.
     hessian_method : {"direct", "fd_grad"}
         "direct" uses jax.hessian of the spectral-grid posterior. This is now
         the preferred path after the spectral transition refactor.
 
         "fd_grad" keeps the older finite-difference-of-gradient fallback.
+    step : float or ndarray, optional
+        Step used by the finite-difference fallback.
+
+    Returns
+    -------
+    out : dict
+        Full Hessian and covariance, conditioning diagnostics, and dynamic
+        parameter standard errors.
+
+    Notes
+    -----
+    Unlike the CPU fallback, this Hessian includes every free waveform
+    coefficient.
     """
     if hessian_method == "direct":
         H = np.asarray(
@@ -209,6 +312,33 @@ def run_added_noise_fit_jax(
     3. Fit the regularized data yk_reg.
     4. Set R_eff prior mode to the current R_add.
     5. Use continuation only through param0, not through the priors.
+
+    Parameters
+    ----------
+    data : dict
+        Original observation data.
+    R_add : float
+        Added regularizing-noise variance.
+    M : int
+        Maximum Fourier mode.
+    rng : numpy.random.Generator
+        Random number generator.
+    n_theta : int, optional
+        Number of phase-grid points.
+    param0 : tuple, optional
+        Explicit initialization.
+    initialize_kwargs, prior_kwargs, optimizer_kwargs : dict, optional
+        Options forwarded to fitting stages.
+    compute_uncertainty : bool, optional
+        Compute the full Laplace covariance after a successful fit.
+    hessian_method : {"direct", "fd_grad"}, optional
+        Laplace Hessian method.
+
+    Returns
+    -------
+    out : dict
+        Summary, fit, parameters, priors, regularized data, and optional
+        full covariance.
     """
     if initialize_kwargs is None:
         initialize_kwargs = {}
@@ -346,96 +476,6 @@ def run_added_noise_fit_jax(
     }
 
 
-# def sweep_added_noise_jax(
-#     data,
-#     R_add_values,
-#     M,
-#     rng,
-#     *,
-#     n_reps=1,
-#     n_theta=128,
-#     warm_start=True,
-#     initialize_kwargs=None,
-#     prior_kwargs=None,
-#     optimizer_kwargs=None,
-#     compute_uncertainty=True,
-#     hessian_method="direct",
-# ):
-#     """
-#     JAX continuation sweep over added-noise variance.
-
-#     Priors
-#     ------
-#     omega:
-#         prior center estimated once from the raw-data FFT.
-
-#     Dtheta:
-#         prior mode fixed across the sweep through Dtheta_mode.
-
-#     R_eff:
-#         prior mode reset at each point to the current R_add.
-
-#     Continuation
-#     ------------
-#     If warm_start=True, the previous MAP estimate initializes the next fit.
-#     This changes only the optimizer seed, not the statistical prior.
-#     """
-#     if initialize_kwargs is None:
-#         initialize_kwargs = {}
-
-#     if prior_kwargs is None:
-#         prior_kwargs = {}
-
-#     if optimizer_kwargs is None:
-#         optimizer_kwargs = {}
-
-#     rows = []
-#     results = []
-
-#     R_add_values = list(R_add_values)
-
-#     tk0, yk0 = HP.as_inference_data(data)
-#     omega_fft, _, _ = HP.estimate_frequency_fft((tk0, yk0))
-
-#     for rep in range(n_reps):
-#         param0 = None
-
-#         for i, R_add in enumerate(R_add_values):
-#             init_kwargs_i = dict(initialize_kwargs)
-#             init_kwargs_i["omega0"] = omega_fft
-
-#             out = run_added_noise_fit_jax(
-#                 data,
-#                 R_add,
-#                 M,
-#                 rng,
-#                 n_theta=n_theta,
-#                 param0=param0 if warm_start else None,
-#                 initialize_kwargs=init_kwargs_i,
-#                 prior_kwargs=prior_kwargs,
-#                 optimizer_kwargs=optimizer_kwargs,
-#                 compute_uncertainty=compute_uncertainty,
-#                 hessian_method=hessian_method,
-#             )
-
-#             row = dict(out["row"])
-#             row["rep"] = rep
-#             row["sweep_index"] = i
-#             row["omega_prior_mode"] = omega_fft
-#             row["R_mode"] = R_add
-
-#             rows.append(row)
-#             results.append(out)
-
-#             if warm_start and out["fit"]["success"]:
-#                 param0 = out["param"]
-
-#     return {
-#         "summary": pd.DataFrame(rows),
-#         "results": results,
-#     }
-
-
 def sweep_added_noise_jax(
     data,
     R_add_values,
@@ -453,6 +493,41 @@ def sweep_added_noise_jax(
     compute_ppc=False,
     ppc_kwargs=None,
 ):
+    """
+    Run JAX MAP fits across added-noise variances.
+
+    Parameters
+    ----------
+    data : dict
+        Original observation data.
+    R_add_values : iterable[float]
+        Added-noise variances.
+    M : int
+        Maximum Fourier mode.
+    rng : numpy.random.Generator
+        Random number generator.
+    n_reps : int, optional
+        Replicate sweeps.
+    n_theta : int, optional
+        Number of phase-grid points.
+    warm_start : bool, optional
+        Initialize each fit from the preceding successful MAP.
+    initialize_kwargs, prior_kwargs, optimizer_kwargs : dict, optional
+        Options forwarded to each JAX fit.
+    compute_uncertainty : bool, optional
+        Compute full Laplace covariance.
+    hessian_method : {"direct", "fd_grad"}, optional
+        Laplace Hessian method.
+    compute_ppc : bool, optional
+        Run interval posterior-predictive checks.
+    ppc_kwargs : dict, optional
+        Options forwarded to the PPC workflow.
+
+    Returns
+    -------
+    out : dict
+        Summary data frame and full fit results.
+    """
     if initialize_kwargs is None:
         initialize_kwargs = {}
 
@@ -563,6 +638,23 @@ def sweep_added_noise_jax(
     }
 
 def unpack_param_jax(x, M):
+    """
+    Unpack a flat JAX parameter vector.
+
+    Parameters
+    ----------
+    x : jax.Array
+        Flat parameter vector.
+    M : int
+        Maximum Fourier mode.
+
+    Returns
+    -------
+    omega, lnDtheta, lnR : jax.Array
+        Dynamic parameters.
+    A, B : jax.Array, shape (M+1,)
+        Gauge-fixed Fourier coefficients.
+    """
     omega = x[0]
     lnDtheta = x[1]
     lnR = x[2]
@@ -578,10 +670,38 @@ def unpack_param_jax(x, M):
 
 
 def wrap_to_pi_jax(x):
+    """
+    Wrap JAX angles to ``[-pi, pi)``.
+
+    Parameters
+    ----------
+    x : jax.Array
+        Angles in radians.
+
+    Returns
+    -------
+    wrapped : jax.Array
+        Wrapped angles.
+    """
     return (x + jnp.pi) % (2.0 * jnp.pi) - jnp.pi
 
 
 def q_fourier_jax(theta, A, B):
+    """
+    Evaluate the Fourier waveform with JAX operations.
+
+    Parameters
+    ----------
+    theta : jax.Array, shape (L,)
+        Phase values.
+    A, B : jax.Array, shape (M+1,)
+        Fourier coefficients.
+
+    Returns
+    -------
+    q : jax.Array, shape (L,)
+        Waveform values.
+    """
     M = A.shape[0] - 1
     m = jnp.arange(M + 1)
 
@@ -591,33 +711,24 @@ def q_fourier_jax(theta, A, B):
     return q_cos + q_sin
 
 
-def wrapped_gaussian_kernel_jax(theta_grid, mean_step, Q, eps=1e-30):
-    """
-    Wrapped Gaussian transition kernel.
-
-    The small eps floor prevents exact zeros in the transition kernel.
-    Exact zeros are usually harmless for function evaluation but can poison
-    autodiff through the filtering recursion at low process/noise levels.
-    """
-    delta = wrap_to_pi_jax(theta_grid - mean_step)
-
-    log_kernel = -0.5 * delta**2 / Q
-    log_kernel = log_kernel - jax.scipy.special.logsumexp(log_kernel)
-
-    kernel = jnp.exp(log_kernel)
-
-    # Keep all transition probabilities strictly positive.
-    kernel = kernel + eps
-    kernel = kernel / jnp.sum(kernel)
-
-    return kernel
-
-
-def circular_convolve_jax(kernel, p):
-    return jnp.real(jnp.fft.ifft(jnp.fft.fft(kernel) * jnp.fft.fft(p)))
-
-
 def neg_log_prior_jax(x, priors, M):
+    """
+    Evaluate the negative log prior with JAX operations.
+
+    Parameters
+    ----------
+    x : jax.Array
+        Flat parameter vector.
+    priors : tuple[jax.Array, ...]
+        Model prior hyperparameters.
+    M : int
+        Maximum Fourier mode.
+
+    Returns
+    -------
+    nlp : jax.Array
+        Unnormalized negative log prior.
+    """
     (
         mu_theta,
         sigma_theta,
@@ -650,12 +761,8 @@ def neg_log_prior_jax(x, priors, M):
     nlp = nlp - lnDtheta
     nlp = nlp - lnR
 
-    # waveform priors
+    # Mode-dependent waveform priors
     nlp = nlp + 0.5 * ((A[0] - mu_A) / sigma_A) ** 2
-    # nlp = nlp + 0.5 * jnp.sum((A[1:] / sigma_q) ** 2)
-
-    # if M >= 2:
-    #     nlp = nlp + 0.5 * jnp.sum((B[2:] / sigma_q) ** 2)
     p_wave = 1.0
     
     mA = jnp.arange(1, M + 1)
@@ -673,6 +780,27 @@ def neg_log_prior_jax(x, priors, M):
 
 
 def neg_log_marginal_likelihood_jax(x, tk, yk, priors, M, n_theta):
+    """
+    Evaluate the spectral-filter marginal likelihood with JAX.
+
+    Parameters
+    ----------
+    x : jax.Array
+        Flat parameter vector.
+    tk, yk : jax.Array
+        Observation times and values.
+    priors : tuple[jax.Array, ...]
+        Model prior hyperparameters.
+    M : int
+        Maximum Fourier mode.
+    n_theta : int
+        Number of phase-grid points.
+
+    Returns
+    -------
+    nll : jax.Array
+        Negative log marginal likelihood.
+    """
     (
         mu_theta,
         sigma_theta,
@@ -704,25 +832,6 @@ def neg_log_marginal_likelihood_jax(x, tk, yk, priors, M, n_theta):
     prior_delta = wrap_to_pi_jax(theta_grid - mu_theta)
     log_prior_theta = -0.5 * prior_delta**2 / sigma_theta**2
     log_prior_theta = log_prior_theta - jax.scipy.special.logsumexp(log_prior_theta)
-
-    # eps_alpha = 1e-30
-
-    # def step(log_alpha_prev, logL_k):
-    #     alpha_prev = jnp.exp(log_alpha_prev)
-    
-    #     alpha_pred = spectral_predict_jax(alpha_prev, K_hat)
-    
-    #     alpha_pred = jnp.maximum(alpha_pred, 0.0)
-    #     alpha_pred = alpha_pred + eps_alpha
-    #     alpha_pred = alpha_pred / jnp.sum(alpha_pred)
-    
-    #     log_alpha_pred = jnp.log(alpha_pred)
-    #     log_unnorm = log_alpha_pred + logL_k
-    
-    #     log_scale = jax.scipy.special.logsumexp(log_unnorm)
-    #     log_alpha = log_unnorm - log_scale
-    
-    #     return log_alpha, log_scale
 
     eps_soft = 1e-12
 
@@ -762,6 +871,27 @@ def neg_log_marginal_likelihood_jax(x, tk, yk, priors, M, n_theta):
 
 
 def neg_log_posterior_flat_jax(x, tk, yk, priors, M, n_theta=256):
+    """
+    Evaluate the flat-vector JAX negative log posterior.
+
+    Parameters
+    ----------
+    x : jax.Array
+        Flat parameter vector.
+    tk, yk : jax.Array
+        Observation times and values.
+    priors : tuple[jax.Array, ...]
+        Model prior hyperparameters.
+    M : int
+        Maximum Fourier mode.
+    n_theta : int, optional
+        Number of phase-grid points.
+
+    Returns
+    -------
+    nlp : jax.Array
+        Unnormalized negative log posterior.
+    """
     nll = neg_log_marginal_likelihood_jax(
         x,
         tk,
@@ -857,6 +987,26 @@ def hessian_neg_log_posterior_fd(
 ):
     """
     Finite-difference Hessian of the JAX posterior gradient.
+
+    Parameters
+    ----------
+    x0 : array_like
+        Evaluation point.
+    tk, yk : jax.Array
+        Observation times and values.
+    priors : tuple[jax.Array, ...]
+        Model prior hyperparameters.
+    M : int
+        Maximum Fourier mode.
+    n_theta : int, optional
+        Number of phase-grid points.
+    step : float or ndarray, optional
+        Finite-difference step.
+
+    Returns
+    -------
+    H : ndarray
+        Symmetric Hessian approximation.
     """
 
     def grad_fun(x):

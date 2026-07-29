@@ -1,2 +1,41 @@
 
+# Operating-system files
 .DS_Store
+Thumbs.db
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test, lint, type-check, and coverage artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python builds and package metadata
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Editor temporary files
+*.swp
+*.swo
+*~
+
+# Keep shared VS Code settings; ignore other local workspace state
+.vscode/*
+!.vscode/settings.json

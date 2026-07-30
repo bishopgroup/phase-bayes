@@ -515,6 +515,129 @@ def fit_sspe(
     }
 
 
+def simulate_sspe(
+    n_samples,
+    sampling_frequency,
+    frequencies,
+    damping,
+    process_variances,
+    observation_variance,
+    *,
+    initial_state=None,
+    rng=None,
+):
+    """Simulate observations and latent states from an SSPE model.
+
+    Parameters
+    ----------
+    n_samples : int
+        Number of samples to simulate.
+    sampling_frequency : float
+        Sampling frequency in hertz.
+    frequencies : array_like, shape (n_components,)
+        Oscillator frequencies in hertz.
+    damping : array_like, shape (n_components,)
+        Per-sample damping factors in the open interval ``(0, 1)``.
+    process_variances : array_like, shape (n_components,)
+        Isotropic process-noise variances.
+    observation_variance : float
+        Scalar observation-noise variance.
+    initial_state : array_like, shape (2*n_components,), optional
+        Initial latent state. By default, each component is drawn from its
+        exact stationary Gaussian distribution.
+    rng : numpy.random.Generator, optional
+        Random-number generator. Supply a seeded generator for reproducible
+        simulations.
+
+    Returns
+    -------
+    result : dict
+        Latent states, real-coordinate components, amplitudes, wrapped and
+        unwrapped phases, noiseless reconstruction, observation noise, noisy
+        observations, and the model matrices.
+
+    Raises
+    ------
+    ValueError
+        If the sample count, parameters, variance, or initial state is invalid.
+    """
+    if not isinstance(n_samples, (int, np.integer)) or n_samples < 1:
+        raise ValueError("n_samples must be a positive integer.")
+    if not np.isfinite(observation_variance) or observation_variance <= 0:
+        raise ValueError("observation_variance must be finite and positive.")
+    if rng is None:
+        rng = np.random.default_rng()
+
+    frequencies = np.atleast_1d(np.asarray(frequencies, dtype=float))
+    damping = np.atleast_1d(np.asarray(damping, dtype=float))
+    process_variances = np.atleast_1d(
+        np.asarray(process_variances, dtype=float)
+    )
+    transition, process_covariance, observation = oscillator_matrices(
+        frequencies,
+        sampling_frequency,
+        damping,
+        process_variances,
+    )
+    n_components = frequencies.size
+    n_state = 2 * n_components
+
+    states = np.empty((n_samples, n_state))
+    if initial_state is None:
+        stationary_variances = process_variances / (1.0 - damping**2)
+        initial_covariance = block_diag(
+            *(variance * np.eye(2) for variance in stationary_variances)
+        )
+        states[0] = rng.multivariate_normal(
+            np.zeros(n_state),
+            initial_covariance,
+            check_valid="raise",
+        )
+    else:
+        initial_state = np.asarray(initial_state, dtype=float)
+        if initial_state.shape != (n_state,) or not np.all(
+            np.isfinite(initial_state)
+        ):
+            raise ValueError(
+                "initial_state must be finite with shape (2*n_components,)."
+            )
+        states[0] = initial_state
+
+    zero_mean = np.zeros(n_state)
+    for index in range(1, n_samples):
+        states[index] = transition @ states[index - 1] + rng.multivariate_normal(
+            zero_mean,
+            process_covariance,
+            check_valid="raise",
+        )
+
+    components = states[:, ::2]
+    amplitudes = np.hypot(states[:, ::2], states[:, 1::2])
+    phases_wrapped = component_phase(states)
+    phases_unwrapped = np.unwrap(phases_wrapped, axis=0)
+    noiseless_observation = components @ np.ones(n_components)
+    observation_noise = rng.normal(
+        scale=np.sqrt(observation_variance),
+        size=n_samples,
+    )
+    noisy_observation = noiseless_observation + observation_noise
+
+    return {
+        "states": states,
+        "components": components,
+        "amplitudes": amplitudes,
+        "phases_wrapped": phases_wrapped,
+        "phases_unwrapped": phases_unwrapped,
+        "noiseless_observation": noiseless_observation,
+        "observation_noise": observation_noise,
+        "observation": noisy_observation,
+        "transition": transition,
+        "process_covariance": process_covariance,
+        "observation_vector": observation,
+        "sampling_frequency": float(sampling_frequency),
+    }
+
+
 def component_phase(state_mean):
     """Extract wrapped component phases from interleaved state coordinates.
 
